@@ -449,7 +449,11 @@ export function Editor() {
           setIsProcessing(false);
         }, 2000);
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Export failed';
+        const message =
+          err instanceof Error ? err.message :
+          typeof err === 'string' ? err :
+          err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) :
+          'Export failed';
         setLoadError(message);
         setIsProcessing(false);
         setProcessingStatus('');
