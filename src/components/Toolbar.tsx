@@ -62,40 +62,40 @@ export function Toolbar({
   return (
     <div
       className={cn(
-        'flex items-center justify-between rounded-lg border bg-card p-2 shadow-sm',
+        'flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 rounded-lg border bg-card p-2 shadow-sm',
         className
       )}
     >
       {/* File info */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center flex-wrap gap-1.5">
         {videoInfo ? (
           <>
-            <Badge variant="outline" className="gap-1">
+            <Badge variant="outline" className="gap-1 text-xs">
               <Video className="h-3 w-3" />
               {videoInfo.width}x{videoInfo.height}
             </Badge>
-            <Badge variant="outline">
+            <Badge variant="outline" className="text-xs">
               {formatDuration(videoInfo.duration)}
             </Badge>
-            <Badge variant="outline">
+            <Badge variant="outline" className="text-xs">
               {formatFileSize(videoInfo.fileSize)}
             </Badge>
             {videoInfo.hasAudio && (
-              <Badge variant="outline" className="gap-1">
+              <Badge variant="outline" className="gap-1 text-xs">
                 <Music className="h-3 w-3" />
                 Audio
               </Badge>
             )}
           </>
         ) : (
-          <span className="px-2 text-sm text-muted-foreground">
+          <span className="px-2 text-xs sm:text-sm text-muted-foreground">
             No video loaded
           </span>
         )}
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center flex-wrap gap-1.5 w-full sm:w-auto">
         {/* Processing indicator */}
         {isProcessing && (
           <div className="flex items-center gap-1 text-sm text-muted-foreground">

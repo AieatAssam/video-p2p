@@ -50,6 +50,7 @@ export function Editor() {
   const [processingStatus, setProcessingStatus] = useState('');
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
@@ -66,21 +67,50 @@ export function Editor() {
     };
   }, [previewUrl, thumbnails]);
 
+  /**
+   * Attempt to load ffmpeg.wasm. Shows a descriptive error message
+   * if cross-origin isolation (COOP/COEP) is missing — the most common
+   * cause of SharedArrayBuffer failure.
+   */
+  const initFfmpeg = useCallback(async (engine: FFmpegEngine) => {
+    try {
+      await engine.load();
+      setFfmpegLoaded(true);
+      setLoadError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      // Detect missing SharedArrayBuffer / cross-origin isolation
+      if (message.includes('SharedArrayBuffer') || !crossOriginIsolated) {
+        setLoadError(
+          'FFmpeg requires cross-origin isolation (SharedArrayBuffer). ' +
+          'If this persists, ensure your browser supports it and try reloading.'
+        );
+      } else {
+        setLoadError(`Failed to load FFmpeg: ${message}`);
+      }
+    }
+  }, []);
+
   // Initialize FFmpeg
   useEffect(() => {
     const engine = new FFmpegEngine();
     ffmpegRef.current = engine;
-
-    engine.load().then(() => {
-      setFfmpegLoaded(true);
-    }).catch((err: Error) => {
-      setLoadError(err.message);
-    });
+    initFfmpeg(engine);
 
     return () => {
       engine.terminate();
     };
-  }, []);
+  }, [initFfmpeg]);
+
+  /** Retry ffmpeg.wasm loading after a failure. */
+  const handleRetryFfmpeg = useCallback(async () => {
+    setIsRetrying(true);
+    setLoadError(null);
+    const engine = new FFmpegEngine();
+    ffmpegRef.current = engine;
+    await initFfmpeg(engine);
+    setIsRetrying(false);
+  }, [initFfmpeg]);
 
   // Handle file selection
   const handleFileSelected = useCallback(async (selectedFile: File) => {
@@ -454,8 +484,21 @@ export function Editor() {
         )}
         {loadError && (
           <div className="flex items-center gap-2 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4" />
-            {loadError}
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span className="max-w-[300px] truncate">{loadError}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetryFfmpeg}
+              disabled={isRetrying}
+              className="ml-2 h-7 text-xs"
+            >
+              {isRetrying ? (
+                <><Loader2 className="mr-1 h-3 w-3 animate-spin" />Retrying...</>
+              ) : (
+                'Retry'
+              )}
+            </Button>
           </div>
         )}
       </header>
@@ -469,16 +512,16 @@ export function Editor() {
         className="mx-4 mt-2"
       />
 
-      {/* Main content */}
-      <div className="flex flex-1 gap-4 overflow-hidden p-4">
+      {/* Main content — responsive: stack on mobile, side-by-side on desktop */}
+      <div className="flex flex-1 flex-col md:flex-row gap-4 overflow-hidden p-4">
         {/* Left panel: Preview + Timeline */}
-        <div className="flex flex-1 flex-col gap-4 overflow-hidden">
+        <div className="flex flex-1 flex-col gap-4 overflow-hidden min-h-0">
           <Preview
             src={previewUrl}
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
             onDurationChange={setDuration}
-            className="flex-1"
+            className="flex-1 min-h-[200px]"
           />
 
           {file && (
@@ -497,8 +540,8 @@ export function Editor() {
           )}
         </div>
 
-        {/* Right panel: Drop zone or Effects */}
-        <div className="w-80 overflow-y-auto">
+        {/* Right panel: Drop zone or Effects — full width on mobile, 320px on desktop */}
+        <div className="w-full md:w-80 shrink-0 overflow-y-auto">
           {!file ? (
             <DropZone onFileSelected={handleFileSelected} className="h-full" />
           ) : (

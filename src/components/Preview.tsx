@@ -93,21 +93,23 @@ export function Preview({
         playsInline
       />
 
-      {/* Overlay controls */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handlePlayPause}
-          className="text-white hover:bg-white/20"
-          aria-label={isPlaying ? 'Pause video' : 'Play video'}
-        >
-          {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-        </Button>
-        <span className="text-xs text-white/80">
-          {formatTime(localCurrentTime)} / {formatTime(duration)}
-        </span>
-      </div>
+      {/* Overlay controls — only show when a video is loaded */}
+      {src && (
+        <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handlePlayPause}
+            className="text-white hover:bg-white/20"
+            aria-label={isPlaying ? 'Pause video' : 'Play video'}
+          >
+            {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+          </Button>
+          <span className="text-xs text-white/80">
+            {formatTime(localCurrentTime)} / {formatTime(duration)}
+          </span>
+        </div>
+      )}
 
       {/* Empty state */}
       {!src && (
