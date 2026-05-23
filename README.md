@@ -4,7 +4,7 @@
 
 An in-browser video editor with 20+ effects (trim, crop, chroma key, GIF export, speed, reverse, stabilize, text overlay, split-screen, and more) plus **P2P sharing via WebRTC** — all running 100% client-side.
 
-**[Live Demo →](https://YOUR_USERNAME.github.io/video-p2p/)**
+**[Live Demo →](https://aieatassam.github.io/video-p2p/)**
 
 ## Features
 
