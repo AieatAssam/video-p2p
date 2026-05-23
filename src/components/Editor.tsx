@@ -10,7 +10,8 @@ import { ShareDialog } from '@/components/ShareDialog';
 import { FFmpegEngine } from '@/lib/ffmpeg';
 import { chainEffects, type EffectInput } from '@/lib/effects';
 import { Loader2, AlertCircle } from 'lucide-react';
-import type { VideoInfo, Effect, EffectType, MediaFile } from '@/types';
+import { LogViewer } from '@/components/LogViewer';
+import type { VideoInfo, Effect, EffectType, MediaFile, LogEntry } from '@/types';
 
 let effectIdCounter = 0;
 function genEffectId(): string {
@@ -54,6 +55,13 @@ export function Editor() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+
+  const addLog = useCallback((level: LogEntry['level'], message: string) => {
+    setLogs((prev) => [...prev, { timestamp: Date.now(), level, message }]);
+  }, []);
+
+  const clearLogs = useCallback(() => setLogs([]), []);
 
   const ffmpegRef = useRef<FFmpegEngine | null>(null);
   const fileDataRef = useRef<File | null>(null);
@@ -73,12 +81,20 @@ export function Editor() {
    * cause of SharedArrayBuffer failure.
    */
   const initFfmpeg = useCallback(async (engine: FFmpegEngine) => {
+    // Route ffmpeg's internal logs (stderr, debug info) to the debug panel
+    engine.setLogCallback((message) => {
+      addLog('ffmpeg', message);
+    });
+
     try {
+      addLog('info', 'Loading ffmpeg.wasm (core-mt)...');
       await engine.load();
       setFfmpegLoaded(true);
       setLoadError(null);
+      addLog('info', 'ffmpeg.wasm loaded successfully');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
+      addLog('error', `ffmpeg.wasm failed to load: ${message}`);
       // Detect missing SharedArrayBuffer / cross-origin isolation
       if (message.includes('SharedArrayBuffer') || !crossOriginIsolated) {
         setLoadError(
@@ -90,7 +106,7 @@ export function Editor() {
         setLoadError(`Failed to load FFmpeg: ${message}`);
       }
     }
-  }, []);
+  }, [addLog]);
 
   // Initialize FFmpeg
   useEffect(() => {
@@ -146,6 +162,7 @@ export function Editor() {
       const videoDuration = await new Promise<number>((resolve) => {
         const timeout = setTimeout(() => {
           tempVideo.remove();
+          addLog('warn', 'Video metadata timed out (8s) — using fallback info');
           const fallbackDuration = 10;
           setVideoInfo({
             width: 640,
@@ -220,11 +237,12 @@ export function Editor() {
         typeof err === 'string' ? err :
         err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) :
         'Failed to load file';
+      addLog('error', `File selection failed: ${message}`);
       setLoadError(message);
       setIsProcessing(false);
       setProcessingStatus('');
     }
-  }, [ffmpegLoaded, videoInfo]);
+  }, [ffmpegLoaded, videoInfo, addLog]);
 
   const extractThumbnails = async (
     engine: FFmpegEngine,
@@ -271,14 +289,16 @@ export function Editor() {
         const blob = new Blob([thumbData], { type: 'image/png' });
         thumbs.push(URL.createObjectURL(blob));
         await engine.deleteFile(thumbFile);
-      } catch {
-        // Skip failed thumbnails
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        addLog('warn', `Thumbnail ${i} failed: ${errMsg}`);
       }
     }
 
     // Free WASM memory
     try { await engine.deleteFile('input'); } catch { /* ignore */ }
 
+    addLog('info', `Extracted ${thumbs.length}/${numThumbs} thumbnails`);
     setThumbnails(thumbs);
   };
 
@@ -499,12 +519,13 @@ export function Editor() {
           typeof err === 'string' ? err :
           err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) :
           'Export failed';
+        addLog('error', `Export failed: ${message}`);
         setLoadError(message);
         setIsProcessing(false);
         setProcessingStatus('');
       }
     },
-    [file, videoInfo, effects, trimStart, trimEnd, duration]
+    [file, videoInfo, effects, trimStart, trimEnd, duration, addLog]
   );
 
   // Share handler
@@ -622,6 +643,9 @@ export function Editor() {
         onOpenChange={setShareDialogOpen}
         file={mediaFile}
       />
+
+      {/* Debug log panel at the bottom */}
+      <LogViewer logs={logs} onClear={clearLogs} />
     </div>
   );
 }

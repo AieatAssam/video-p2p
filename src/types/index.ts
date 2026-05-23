@@ -289,3 +289,13 @@ export interface MediaFile {
   /** Size in bytes */
   size: number;
 }
+
+/** A single entry in the debug log */
+export interface LogEntry {
+  /** When the log was recorded */
+  timestamp: number;
+  /** Log level */
+  level: 'info' | 'warn' | 'error' | 'debug' | 'ffmpeg';
+  /** The message content */
+  message: string;
+}

@@ -30,10 +30,26 @@ export class FFmpegEngine {
   private loaded = false;
   private lastError: string | null = null;
   private progressCallback: ((event: ProgressEvent) => void) | null = null;
+  private logCallback: ((message: string) => void) | null = null;
 
   constructor() {
     this.ffmpeg = new FFmpeg();
     this.setupProgressHandler();
+    this.setupLogHandler();
+  }
+
+  /** Sets a callback for ffmpeg log/stderr output. */
+  setLogCallback(cb: ((message: string) => void) | null): void {
+    this.logCallback = cb;
+  }
+
+  /** Registers the ffmpeg log/stderr listener. */
+  private setupLogHandler(): void {
+    this.ffmpeg.on('log', ({ message }) => {
+      if (this.logCallback && message) {
+        this.logCallback(message);
+      }
+    });
   }
 
   /** Registers the ffmpeg progress listener that forwards to the current callback. */
