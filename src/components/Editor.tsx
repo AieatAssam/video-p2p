@@ -56,7 +56,7 @@ export function Editor() {
   const [trimEnd, setTrimEnd] = useState(0);
 
   const ffmpegRef = useRef<FFmpegEngine | null>(null);
-  const originalDataRef = useRef<Uint8Array | null>(null);
+  const fileDataRef = useRef<File | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -126,24 +126,18 @@ export function Editor() {
 
     try {
       setIsProcessing(true);
-      setProcessingStatus('Loading file...');
-
-      // Load file data for later use (thumbnails, export)
-      const data = await engine.loadFile(selectedFile);
-      originalDataRef.current = data;
-
-      // Don't write to ffmpeg virtual filesystem yet — metadata extraction
-      // is done via the native <video> element, which doesn't need ffmpeg.
-
-      // Extract video info using ffprobe via ffmpeg
       setProcessingStatus('Analyzing video...');
+
+      // Store the File reference for later use (thumbnails, export).
+      // We DON'T pre-load it into memory — that's done on-demand to avoid
+      // keeping the entire file in JS heap + WASM memory simultaneously.
+      fileDataRef.current = selectedFile;
 
       // Create object URL for preview
       const url = URL.createObjectURL(selectedFile);
       setPreviewUrl(url);
 
-      // Determine video info from the file
-      // We use a temporary video element to get metadata (same URL as preview)
+      // Determine video info from a native <video> element (no ffmpeg needed)
       const tempVideo = document.createElement('video');
       tempVideo.preload = 'metadata';
       tempVideo.src = url;
@@ -168,7 +162,6 @@ export function Editor() {
           resolve(tempVideo.duration);
         };
         tempVideo.onerror = () => {
-          // Fallback info when video metadata can't be read
           const fallbackDuration = 10;
           const info: VideoInfo = {
             width: 640,
@@ -188,16 +181,15 @@ export function Editor() {
         tempVideo.src = url;
       });
 
-      // Extract thumbnails — pass duration directly instead of relying on React state
+      // Extract thumbnails — uses on-demand write + individual keyframe seeks
       setProcessingStatus('Extracting thumbnails...');
       try {
-        await extractThumbnails(engine, data, videoDuration);
+        await extractThumbnails(engine, selectedFile, videoDuration);
       } catch {
         // Thumbnails are optional
       }
 
-      // Free virtual filesystem memory by removing the input file.
-      // It will be re-written during export if needed.
+      // Ensure virtual filesystem is clean
       try { await engine.deleteFile('input'); } catch { /* ignore */ }
 
       setProcessingStatus('');
@@ -216,54 +208,41 @@ export function Editor() {
 
   const extractThumbnails = async (
     engine: FFmpegEngine,
-    data: Uint8Array,
+    file: File,
     videoDuration: number
   ) => {
     const thumbs: string[] = [];
     const numThumbs = 10;
 
-    // Write original data
+    // Write input file to ffmpeg's virtual filesystem (only once, not per-thumbnail)
+    const data = await engine.loadFile(file);
     try {
       await engine.writeFile('input', data);
     } catch {
       // File may already exist
     }
 
-    // Extract ALL thumbnails in a single pass using the fps filter.
-    // This is ~10x faster than 10 individual execCommand calls because
-    // ffmpeg only decodes and seeks once instead of reinitializing per frame.
-    const interval = videoDuration / numThumbs;
-    const thumbPattern = 'thumb_%d.png';
-    try {
-      await engine.execCommand([
-        '-i', 'input',
-        '-vf', `fps=1/${interval},scale=160:-1`,
-        '-vframes', String(numThumbs),
-        '-q:v', '2',
-        thumbPattern,
-      ]);
+    // Use individual -ss BEFORE -i (keyframe seeking) for each thumbnail.
+    // This is MUCH faster than the fps filter for high-res video because:
+    //   - fps filter decodes EVERY frame between first and last thumbnail
+    //   - -ss before -i jumps directly to the nearest keyframe
+    //   - Only ~1-2 seconds of frames need decoding per thumbnail
+    // In ffmpeg.wasm (25-60x slower than native), this matters enormously.
+    //
+    // For very short videos (< 30s), the fps filter is still fine since
+    // there aren't many frames to decode either way.
+    const useFastSeek = videoDuration >= 30;
 
-      // Read back all thumbnails (ffmpeg numbers from 1)
-      for (let i = 1; i <= numThumbs; i++) {
-        const thumbFile = `thumb_${i}.png`;
-        try {
-          const thumbData = await engine.readFile(thumbFile);
-          const blob = new Blob([thumbData], { type: 'image/png' });
-          thumbs.push(URL.createObjectURL(blob));
-          await engine.deleteFile(thumbFile);
-        } catch {
-          // Skip failed individual thumbnails
-        }
-      }
-    } catch {
-      // Fallback: try individual extraction if batch fails
+    if (useFastSeek) {
+      // Fast path: individual keyframe seeks
       for (let i = 0; i < numThumbs; i++) {
         const time = (videoDuration / numThumbs) * i;
         const thumbFile = `thumb_${i}.png`;
         try {
+          // -ss BEFORE -i = keyframe seek (fast, O(1))
           await engine.execCommand([
-            '-i', 'input',
             '-ss', String(time),
+            '-i', 'input',
             '-vframes', '1',
             '-vf', 'scale=160:-1',
             thumbFile,
@@ -276,7 +255,56 @@ export function Editor() {
           // Skip failed thumbnails
         }
       }
+    } else {
+      // Short video path: single-pass fps filter (fewer frames = fast enough)
+      const interval = videoDuration / numThumbs;
+      const thumbPattern = 'thumb_%d.png';
+      try {
+        await engine.execCommand([
+          '-i', 'input',
+          '-vf', `fps=1/${interval},scale=160:-1`,
+          '-vframes', String(numThumbs),
+          '-q:v', '2',
+          thumbPattern,
+        ]);
+
+        for (let i = 1; i <= numThumbs; i++) {
+          const thumbFile = `thumb_${i}.png`;
+          try {
+            const thumbData = await engine.readFile(thumbFile);
+            const blob = new Blob([thumbData], { type: 'image/png' });
+            thumbs.push(URL.createObjectURL(blob));
+            await engine.deleteFile(thumbFile);
+          } catch {
+            // Skip failed individual thumbnails
+          }
+        }
+      } catch {
+        // Fallback: individual seeks
+        for (let i = 0; i < numThumbs; i++) {
+          const time = (videoDuration / numThumbs) * i;
+          const thumbFile = `thumb_${i}.png`;
+          try {
+            await engine.execCommand([
+              '-ss', String(time),
+              '-i', 'input',
+              '-vframes', '1',
+              '-vf', 'scale=160:-1',
+              thumbFile,
+            ]);
+            const thumbData = await engine.readFile(thumbFile);
+            const blob = new Blob([thumbData], { type: 'image/png' });
+            thumbs.push(URL.createObjectURL(blob));
+            await engine.deleteFile(thumbFile);
+          } catch {
+            // Skip failed thumbnails
+          }
+        }
+      }
     }
+
+    // Free WASM memory
+    try { await engine.deleteFile('input'); } catch { /* ignore */ }
 
     setThumbnails(thumbs);
   };
@@ -387,9 +415,12 @@ export function Editor() {
         const statusMsg = `Exporting as ${format.toUpperCase()}...`;
         setProcessingStatus(statusMsg);
 
-        // Write input file to ffmpeg's virtual filesystem
-        if (originalDataRef.current) {
-          await engine.writeFile('input', originalDataRef.current);
+        // Write input file to ffmpeg's virtual filesystem on-demand.
+        // We don't pre-load the entire file into memory — instead we read
+        // from the File object right when ffmpeg needs it.
+        if (fileDataRef.current) {
+          const data = await engine.loadFile(fileDataRef.current);
+          await engine.writeFile('input', data);
         }
 
         // Build effect chain from enabled effects, mapping UI types to pipeline types

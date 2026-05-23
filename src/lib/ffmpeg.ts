@@ -13,7 +13,7 @@ import type { ProgressEvent } from '../types';
  * - Cross-origin isolation (same COOP/COEP headers)
  * - A separate worker script (ffmpeg-core.worker.js)
  */
-const BASE_URL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm';
+const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm';
 
 /**
  * Wraps the ffmpeg.wasm FFmpeg instance with lifecycle management,
