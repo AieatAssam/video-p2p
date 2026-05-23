@@ -55,6 +55,7 @@ export function Editor() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
+  const [processingProgress, setProcessingProgress] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const addLog = useCallback((level: LogEntry['level'], message: string) => {
@@ -85,6 +86,20 @@ export function Editor() {
     engine.setLogCallback((message) => {
       addLog('ffmpeg', message);
     });
+
+    // Detect first-load SW setup: if the coi-serviceworker just registered
+    // and hasn't activated yet, crossOriginIsolated is false and ffmpeg's
+    // SharedArrayBuffer requirement won't be met. The SW registration script
+    // in index.html handles this with a reload — we just show a clean setup
+    // message instead of trying to load ffmpeg and failing cryptically.
+    if (!crossOriginIsolated && sessionStorage.getItem('coi-done') === '1') {
+      addLog('info', 'Cross-origin isolation not yet active — service worker setup in progress. Page will reload automatically.');
+      setLoadError(
+        'Setting up cross-origin isolation for video processing... ' +
+        'The page will reload once. This only happens on the first visit.'
+      );
+      return;
+    }
 
     try {
       addLog('info', 'Loading ffmpeg.wasm (core-mt)...');
@@ -297,6 +312,7 @@ export function Editor() {
         const blob = new Blob([thumbData], { type: 'image/png' });
         thumbs.push(URL.createObjectURL(blob));
         await engine.deleteFile(thumbFile);
+        setProcessingProgress(Math.round(((i + 1) / numThumbs) * 100));
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         addLog('warn', `Thumbnail ${i} failed: ${errMsg}`);
@@ -308,6 +324,7 @@ export function Editor() {
 
     addLog('info', `Extracted ${thumbs.length}/${numThumbs} thumbnails`);
     setThumbnails(thumbs);
+    setProcessingProgress(0);
   };
 
   // Effect handlers
@@ -440,7 +457,8 @@ export function Editor() {
         }
 
         // Shared progress callback for ffmpeg operations
-        const onProgress = (event: { percent: number }) => {
+        const onExportProgress = (event: { percent: number }) => {
+          setProcessingProgress(event.percent);
           setProcessingStatus(`${statusMsg} (${event.percent}%)`);
         };
 
@@ -455,7 +473,7 @@ export function Editor() {
             if (videoInfo.hasAudio) {
               args.push('-c:a', 'aac', '-b:a', '128k');
             }
-            await engine.execCommand(args, onProgress);
+            await engine.execCommand(args, onExportProgress);
             outputFile = 'output.mp4';
             outputMime = 'video/mp4';
             successMessage = 'MP4 exported successfully!';
@@ -468,7 +486,7 @@ export function Editor() {
             const otherEffects = effectInputs.filter((e) => e.type !== 'gif');
             const gifInput: EffectInput = { type: 'gif', params };
             const args = chainEffects('input', [...otherEffects, gifInput], 'output.gif');
-            await engine.execCommand(args, onProgress);
+            await engine.execCommand(args, onExportProgress);
             outputFile = 'output.gif';
             outputMime = 'image/gif';
             successMessage = 'GIF exported successfully!';
@@ -494,7 +512,7 @@ export function Editor() {
             const args = chainEffects('input', effectInputs, outputFile);
             // Override output codec for audio extraction
             args.push('-vn', '-acodec', codec, '-b:a', `${bitrate}k`);
-            await engine.execCommand(args, onProgress);
+            await engine.execCommand(args, onExportProgress);
             break;
           }
         }
@@ -635,12 +653,25 @@ export function Editor() {
         </div>
       </div>
 
-      {/* Processing overlay */}
+      {/* Processing status bar — non-blocking, doesn't cover the UI or debug log */}
       {isProcessing && processingStatus && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="flex items-center gap-3 rounded-lg bg-card p-6 shadow-lg">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            <span className="text-sm font-medium">{processingStatus}</span>
+        <div className="flex-shrink-0 border-t border-border bg-card/80 px-4 py-2 backdrop-blur-sm">
+          <div className="flex items-center gap-3">
+            <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
+            <span className="text-xs font-medium text-foreground/80">{processingStatus}</span>
+            {processingProgress > 0 && (
+              <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                {processingProgress}%
+              </span>
+            )}
+            {processingProgress > 0 && (
+              <div className="h-1.5 flex-1 min-w-[60px] max-w-[200px] rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${Math.min(processingProgress, 100)}%` }}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
