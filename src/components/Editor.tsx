@@ -281,12 +281,16 @@ export function Editor() {
       try {
         // -ss BEFORE -i = keyframe seek
         // -skip_frame nokey = only decode keyframes (1 per GOP ~1-2s)
+        // -update 1 = overwrite single output file (image2 muxer requires
+        //   this when not using %d sequence patterns, especially with
+        //   -skip_frame which changes muxer behaviour)
         await engine.execCommand([
           '-ss', String(time),
           '-skip_frame', 'nokey',
           '-i', 'input',
           '-vframes', '1',
           '-vf', 'scale=160:-1',
+          '-update', '1',
           thumbFile,
         ]);
         const thumbData = await engine.readFile(thumbFile);
