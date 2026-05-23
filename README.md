@@ -437,6 +437,13 @@ tests/
 └── App.test.tsx
 ```
 
-## License
+## License & Attributions
 
-MIT
+This project is licensed under the **MIT License** — see [LICENSE](./LICENSE) for details.
+
+### Third-Party Notices
+
+See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for license information on included open-source components.
+
+- **Lucide Icons** (used in the UI) are CC BY 4.0
+- All other dependencies are MIT, Apache-2.0, or ISC licensed
