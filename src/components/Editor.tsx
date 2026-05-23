@@ -194,15 +194,23 @@ export function Editor() {
         // Thumbnails are optional
       }
 
+      // Free virtual filesystem memory by removing the input file.
+      // It will be re-written during export if needed.
+      try { await engine.deleteFile('input'); } catch { /* ignore */ }
+
       setProcessingStatus('');
       setIsProcessing(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load file';
+      const message =
+        err instanceof Error ? err.message :
+        typeof err === 'string' ? err :
+        err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) :
+        'Failed to load file';
       setLoadError(message);
       setIsProcessing(false);
       setProcessingStatus('');
     }
-  }, [ffmpegLoaded]);
+  }, [ffmpegLoaded, videoInfo]);
 
   const extractThumbnails = async (
     engine: FFmpegEngine,
@@ -442,6 +450,8 @@ export function Editor() {
 
         // Cleanup output file from virtual filesystem
         await engine.deleteFile(outputFile);
+        // Also free the input file from the virtual filesystem
+        try { await engine.deleteFile('input'); } catch { /* ignore */ }
 
         setProcessingStatus(successMessage);
         setTimeout(() => {

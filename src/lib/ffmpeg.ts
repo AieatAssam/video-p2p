@@ -4,9 +4,16 @@ import type { ProgressEvent } from '../types';
 
 /**
  * CDN base URL for ffmpeg.wasm core files.
- * Fetched dynamically to avoid bundling 31MB+ of WebAssembly.
+ * Uses the multi-thread build (@ffmpeg/core-mt) which has no default
+ * WASM memory limit and can handle larger video files. The single-thread
+ * build (@ffmpeg/core) is limited to ~256MB and fails on large inputs.
+ *
+ * The multi-thread build requires:
+ * - SharedArrayBuffer (provided by coi-serviceworker.js on GitHub Pages)
+ * - Cross-origin isolation (same COOP/COEP headers)
+ * - A separate worker script (ffmpeg-core.worker.js)
  */
-const BASE_URL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
+const BASE_URL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm';
 
 /**
  * Wraps the ffmpeg.wasm FFmpeg instance with lifecycle management,
@@ -64,8 +71,9 @@ export class FFmpegEngine {
     try {
       const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
       const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
+      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
 
-      await this.ffmpeg.load({ coreURL, wasmURL });
+      await this.ffmpeg.load({ coreURL, wasmURL, workerURL });
       this.loaded = true;
       this.lastError = null;
     } catch (error) {
