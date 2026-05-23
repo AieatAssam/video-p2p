@@ -246,10 +246,11 @@ export function Editor() {
         };
       });
 
-      // Extract thumbnails — uses on-demand write + individual keyframe seeks
+      // Extract thumbnails using browser-native <video> (GPU-accelerated,
+      // handles HEVC/AV1/VP9 — much faster than ffmpeg.wasm decode)
       setProcessingStatus('Extracting thumbnails...');
       try {
-        await extractThumbnails(engine, selectedFile, videoDuration);
+        await extractThumbnails(selectedFile, videoDuration, url);
       } catch {
         // Thumbnails are optional
       }
@@ -273,54 +274,89 @@ export function Editor() {
   }, [ffmpegLoaded, videoInfo, addLog]);
 
   const extractThumbnails = async (
-    engine: FFmpegEngine,
     file: File,
-    videoDuration: number
+    videoDuration: number,
+    videoUrl: string
   ) => {
     const thumbs: string[] = [];
     const numThumbs = 10;
 
-    // Write input file to ffmpeg's virtual filesystem (only once)
-    const data = await engine.loadFile(file);
-    try {
-      await engine.writeFile('input', data);
-    } catch {
-      // File may already exist
-    }
+    // Use the browser's native <video> element for thumbnail extraction.
+    // This is hardware-accelerated and works with ANY codec the browser
+    // supports (HEVC/H.265, AV1, VP9, etc.) — no ffmpeg decode overhead.
+    // ffmpeg.wasm's software HEVC decoder is far too slow for 4K content.
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.src = videoUrl;
 
-    // Use -skip_frame nokey to decode ONLY keyframes during seeking.
-    // Without this, ffmpeg decodes every frame between the keyframe and
-    // the target timestamp (~30 frames per seek). For high-res video at
-    // ffmpeg.wasm speed (25-60x slower than native), 10 seeks × 30 frames
-    // × 4K = 300 full-res decodes = extremely slow.
-    //
-    // With -skip_frame nokey, ffmpeg outputs the keyframe nearest the
-    // seek point — exactly 1 frame per thumbnail. For 10 thumbnails on
-    // any resolution: 10 frames decoded total.
-    //
-    // Also add per-command timeout to prevent individual hangs.
+    // Wait for the video to be seekable
+    await new Promise<void>((resolve, reject) => {
+      const onCanPlay = () => {
+        video.removeEventListener('canplay', onCanPlay);
+        video.removeEventListener('error', onError);
+        resolve();
+      };
+      const onError = () => {
+        video.removeEventListener('canplay', onCanPlay);
+        video.removeEventListener('error', onError);
+        reject(new Error('Video failed to load'));
+      };
+      video.addEventListener('canplay', onCanPlay);
+      video.addEventListener('error', onError);
+      // Fallback — if video metadata is already available
+      if (video.readyState >= 2) {
+        video.removeEventListener('canplay', onCanPlay);
+        video.removeEventListener('error', onError);
+        resolve();
+      }
+    });
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: false });
+    if (!ctx) return;
+
     for (let i = 0; i < numThumbs; i++) {
       const time = (videoDuration / numThumbs) * i;
-      const thumbFile = `thumb_${i}.png`;
       try {
-        // -ss BEFORE -i = keyframe seek
-        // -skip_frame nokey = only decode keyframes (1 per GOP ~1-2s)
-        // -update 1 = overwrite single output file (image2 muxer requires
-        //   this when not using %d sequence patterns, especially with
-        //   -skip_frame which changes muxer behaviour)
-        await engine.execCommand([
-          '-ss', String(time),
-          '-skip_frame', 'nokey',
-          '-i', 'input',
-          '-vframes', '1',
-          '-vf', 'scale=160:-1',
-          '-update', '1',
-          thumbFile,
-        ]);
-        const thumbData = await engine.readFile(thumbFile);
-        const blob = new Blob([thumbData], { type: 'image/png' });
-        thumbs.push(URL.createObjectURL(blob));
-        await engine.deleteFile(thumbFile);
+        // Seek to the desired timestamp
+        video.currentTime = time;
+
+        // Wait for the seeked event
+        await new Promise<void>((resolve, reject) => {
+          const onSeeked = () => {
+            video.removeEventListener('seeked', onSeeked);
+            resolve();
+          };
+          const onError = () => {
+            video.removeEventListener('seeked', onSeeked);
+            video.removeEventListener('error', onError);
+            reject(new Error('Seek failed'));
+          };
+          video.addEventListener('seeked', onSeeked);
+          video.addEventListener('error', onError);
+          // If already at the right time
+          if (Math.abs(video.currentTime - time) < 0.01) {
+            video.removeEventListener('seeked', onSeeked);
+            video.removeEventListener('error', onError);
+            resolve();
+          }
+        });
+
+        // Draw the current frame to canvas at thumbnail size
+        const thumbWidth = 160;
+        const thumbHeight = Math.round((thumbWidth / video.videoWidth) * video.videoHeight);
+        canvas.width = thumbWidth;
+        canvas.height = thumbHeight;
+        ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
+
+        // Convert to blob
+        const blob = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.8);
+        });
+        if (blob) {
+          thumbs.push(URL.createObjectURL(blob));
+        }
         setProcessingProgress(Math.round(((i + 1) / numThumbs) * 100));
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -328,10 +364,11 @@ export function Editor() {
       }
     }
 
-    // Free WASM memory
-    try { await engine.deleteFile('input'); } catch { /* ignore */ }
+    // Cleanup
+    video.removeAttribute('src');
+    video.load();
 
-    addLog('info', `Extracted ${thumbs.length}/${numThumbs} thumbnails`);
+    addLog('info', `Extracted ${thumbs.length}/${numThumbs} thumbnails via <video>`);
     setThumbnails(thumbs);
     setProcessingProgress(0);
   };
