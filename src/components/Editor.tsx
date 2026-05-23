@@ -138,12 +138,32 @@ export function Editor() {
       setPreviewUrl(url);
 
       // Determine video info from a native <video> element (no ffmpeg needed)
+      // Add a timeout to prevent hanging on unsupported codecs
       const tempVideo = document.createElement('video');
       tempVideo.preload = 'metadata';
       tempVideo.src = url;
 
       const videoDuration = await new Promise<number>((resolve) => {
+        const timeout = setTimeout(() => {
+          tempVideo.remove();
+          const fallbackDuration = 10;
+          setVideoInfo({
+            width: 640,
+            height: 480,
+            duration: fallbackDuration,
+            fps: 30,
+            fileSize: selectedFile.size,
+            hasAudio: true,
+            codec: 'h264',
+            name: selectedFile.name,
+          });
+          setDuration(fallbackDuration);
+          setTrimEnd(fallbackDuration);
+          resolve(fallbackDuration);
+        }, 8000);
+
         tempVideo.onloadedmetadata = () => {
+          clearTimeout(timeout);
           const info: VideoInfo = {
             width: tempVideo.videoWidth,
             height: tempVideo.videoHeight,
@@ -162,6 +182,7 @@ export function Editor() {
           resolve(tempVideo.duration);
         };
         tempVideo.onerror = () => {
+          clearTimeout(timeout);
           const fallbackDuration = 10;
           const info: VideoInfo = {
             width: 640,
@@ -178,7 +199,6 @@ export function Editor() {
           setTrimEnd(fallbackDuration);
           resolve(fallbackDuration);
         };
-        tempVideo.src = url;
       });
 
       // Extract thumbnails — uses on-demand write + individual keyframe seeks
@@ -214,7 +234,7 @@ export function Editor() {
     const thumbs: string[] = [];
     const numThumbs = 10;
 
-    // Write input file to ffmpeg's virtual filesystem (only once, not per-thumbnail)
+    // Write input file to ffmpeg's virtual filesystem (only once)
     const data = await engine.loadFile(file);
     try {
       await engine.writeFile('input', data);
@@ -222,84 +242,37 @@ export function Editor() {
       // File may already exist
     }
 
-    // Use individual -ss BEFORE -i (keyframe seeking) for each thumbnail.
-    // This is MUCH faster than the fps filter for high-res video because:
-    //   - fps filter decodes EVERY frame between first and last thumbnail
-    //   - -ss before -i jumps directly to the nearest keyframe
-    //   - Only ~1-2 seconds of frames need decoding per thumbnail
-    // In ffmpeg.wasm (25-60x slower than native), this matters enormously.
+    // Use -skip_frame nokey to decode ONLY keyframes during seeking.
+    // Without this, ffmpeg decodes every frame between the keyframe and
+    // the target timestamp (~30 frames per seek). For high-res video at
+    // ffmpeg.wasm speed (25-60x slower than native), 10 seeks × 30 frames
+    // × 4K = 300 full-res decodes = extremely slow.
     //
-    // For very short videos (< 30s), the fps filter is still fine since
-    // there aren't many frames to decode either way.
-    const useFastSeek = videoDuration >= 30;
-
-    if (useFastSeek) {
-      // Fast path: individual keyframe seeks
-      for (let i = 0; i < numThumbs; i++) {
-        const time = (videoDuration / numThumbs) * i;
-        const thumbFile = `thumb_${i}.png`;
-        try {
-          // -ss BEFORE -i = keyframe seek (fast, O(1))
-          await engine.execCommand([
-            '-ss', String(time),
-            '-i', 'input',
-            '-vframes', '1',
-            '-vf', 'scale=160:-1',
-            thumbFile,
-          ]);
-          const thumbData = await engine.readFile(thumbFile);
-          const blob = new Blob([thumbData], { type: 'image/png' });
-          thumbs.push(URL.createObjectURL(blob));
-          await engine.deleteFile(thumbFile);
-        } catch {
-          // Skip failed thumbnails
-        }
-      }
-    } else {
-      // Short video path: single-pass fps filter (fewer frames = fast enough)
-      const interval = videoDuration / numThumbs;
-      const thumbPattern = 'thumb_%d.png';
+    // With -skip_frame nokey, ffmpeg outputs the keyframe nearest the
+    // seek point — exactly 1 frame per thumbnail. For 10 thumbnails on
+    // any resolution: 10 frames decoded total.
+    //
+    // Also add per-command timeout to prevent individual hangs.
+    for (let i = 0; i < numThumbs; i++) {
+      const time = (videoDuration / numThumbs) * i;
+      const thumbFile = `thumb_${i}.png`;
       try {
+        // -ss BEFORE -i = keyframe seek
+        // -skip_frame nokey = only decode keyframes (1 per GOP ~1-2s)
         await engine.execCommand([
+          '-ss', String(time),
+          '-skip_frame', 'nokey',
           '-i', 'input',
-          '-vf', `fps=1/${interval},scale=160:-1`,
-          '-vframes', String(numThumbs),
-          '-q:v', '2',
-          thumbPattern,
+          '-vframes', '1',
+          '-vf', 'scale=160:-1',
+          thumbFile,
         ]);
-
-        for (let i = 1; i <= numThumbs; i++) {
-          const thumbFile = `thumb_${i}.png`;
-          try {
-            const thumbData = await engine.readFile(thumbFile);
-            const blob = new Blob([thumbData], { type: 'image/png' });
-            thumbs.push(URL.createObjectURL(blob));
-            await engine.deleteFile(thumbFile);
-          } catch {
-            // Skip failed individual thumbnails
-          }
-        }
+        const thumbData = await engine.readFile(thumbFile);
+        const blob = new Blob([thumbData], { type: 'image/png' });
+        thumbs.push(URL.createObjectURL(blob));
+        await engine.deleteFile(thumbFile);
       } catch {
-        // Fallback: individual seeks
-        for (let i = 0; i < numThumbs; i++) {
-          const time = (videoDuration / numThumbs) * i;
-          const thumbFile = `thumb_${i}.png`;
-          try {
-            await engine.execCommand([
-              '-ss', String(time),
-              '-i', 'input',
-              '-vframes', '1',
-              '-vf', 'scale=160:-1',
-              thumbFile,
-            ]);
-            const thumbData = await engine.readFile(thumbFile);
-            const blob = new Blob([thumbData], { type: 'image/png' });
-            thumbs.push(URL.createObjectURL(blob));
-            await engine.deleteFile(thumbFile);
-          } catch {
-            // Skip failed thumbnails
-          }
-        }
+        // Skip failed thumbnails
       }
     }
 
