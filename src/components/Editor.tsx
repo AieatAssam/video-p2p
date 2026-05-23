@@ -128,10 +128,12 @@ export function Editor() {
       setIsProcessing(true);
       setProcessingStatus('Loading file...');
 
-      // Load file into ffmpeg virtual filesystem
+      // Load file data for later use (thumbnails, export)
       const data = await engine.loadFile(selectedFile);
       originalDataRef.current = data;
-      await engine.writeFile('input', data);
+
+      // Don't write to ffmpeg virtual filesystem yet — metadata extraction
+      // is done via the native <video> element, which doesn't need ffmpeg.
 
       // Extract video info using ffprobe via ffmpeg
       setProcessingStatus('Analyzing video...');
@@ -220,30 +222,59 @@ export function Editor() {
     const thumbs: string[] = [];
     const numThumbs = 10;
 
-    // Write original data if not already written
+    // Write original data
     try {
       await engine.writeFile('input', data);
     } catch {
       // File may already exist
     }
 
-    for (let i = 0; i < numThumbs; i++) {
-      const time = (videoDuration / numThumbs) * i;
-      const thumbFile = `thumb_${i}.png`;
-      try {
-        await engine.execCommand([
-          '-i', 'input',
-          '-ss', String(time),
-          '-vframes', '1',
-          '-vf', 'scale=160:-1',
-          thumbFile,
-        ]);
-        const thumbData = await engine.readFile(thumbFile);
-        const blob = new Blob([thumbData], { type: 'image/png' });
-        thumbs.push(URL.createObjectURL(blob));
-        await engine.deleteFile(thumbFile);
-      } catch {
-        // Skip failed thumbnails
+    // Extract ALL thumbnails in a single pass using the fps filter.
+    // This is ~10x faster than 10 individual execCommand calls because
+    // ffmpeg only decodes and seeks once instead of reinitializing per frame.
+    const interval = videoDuration / numThumbs;
+    const thumbPattern = 'thumb_%d.png';
+    try {
+      await engine.execCommand([
+        '-i', 'input',
+        '-vf', `fps=1/${interval},scale=160:-1`,
+        '-vframes', String(numThumbs),
+        '-q:v', '2',
+        thumbPattern,
+      ]);
+
+      // Read back all thumbnails (ffmpeg numbers from 1)
+      for (let i = 1; i <= numThumbs; i++) {
+        const thumbFile = `thumb_${i}.png`;
+        try {
+          const thumbData = await engine.readFile(thumbFile);
+          const blob = new Blob([thumbData], { type: 'image/png' });
+          thumbs.push(URL.createObjectURL(blob));
+          await engine.deleteFile(thumbFile);
+        } catch {
+          // Skip failed individual thumbnails
+        }
+      }
+    } catch {
+      // Fallback: try individual extraction if batch fails
+      for (let i = 0; i < numThumbs; i++) {
+        const time = (videoDuration / numThumbs) * i;
+        const thumbFile = `thumb_${i}.png`;
+        try {
+          await engine.execCommand([
+            '-i', 'input',
+            '-ss', String(time),
+            '-vframes', '1',
+            '-vf', 'scale=160:-1',
+            thumbFile,
+          ]);
+          const thumbData = await engine.readFile(thumbFile);
+          const blob = new Blob([thumbData], { type: 'image/png' });
+          thumbs.push(URL.createObjectURL(blob));
+          await engine.deleteFile(thumbFile);
+        } catch {
+          // Skip failed thumbnails
+        }
       }
     }
 
