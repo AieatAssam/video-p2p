@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Upload, Film } from 'lucide-react';
+import { Upload, Film, AlertCircle } from 'lucide-react';
 
 interface DropZoneProps {
   onFileSelected: (file: File) => void;
@@ -8,10 +8,34 @@ interface DropZoneProps {
   className?: string;
 }
 
+/** Video extensions we support for validation. */
+const VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'avi', 'mov', 'mkv', 'm4v', '3gp', 'flv'];
+
 export function DropZone({ onFileSelected, accept = 'video/*', className }: DropZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const validateFile = (file: File): boolean => {
+    // Check MIME type — if the browser provides one, validate against our list
+    if (file.type && file.type.startsWith('video/')) return true;
+    // Check extension fallback for files where type is empty
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext && VIDEO_EXTS.includes(ext)) return true;
+    // If we can't determine the type, let it through (ffmpeg will reject it if invalid)
+    return !file.type;
+  };
+
+  const handleFile = (file: File) => {
+    if (!validateFile(file)) {
+      setError(`Unsupported file type: ${file.type || 'unknown'}. Please use a video file (MP4, WebM, MOV, etc.).`);
+      return;
+    }
+    setError(null);
+    setSelectedFile(file);
+    onFileSelected(file);
+  };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -32,9 +56,7 @@ export function DropZone({ onFileSelected, accept = 'video/*', className }: Drop
       setIsDragOver(false);
       const files = e.dataTransfer.files;
       if (files.length > 0) {
-        const file = files[0];
-        setSelectedFile(file);
-        onFileSelected(file);
+        handleFile(files[0]);
       }
     },
     [onFileSelected]
@@ -48,9 +70,7 @@ export function DropZone({ onFileSelected, accept = 'video/*', className }: Drop
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (files && files.length > 0) {
-        const file = files[0];
-        setSelectedFile(file);
-        onFileSelected(file);
+        handleFile(files[0]);
       }
     },
     [onFileSelected]
@@ -83,6 +103,12 @@ export function DropZone({ onFileSelected, accept = 'video/*', className }: Drop
         onChange={handleFileChange}
         className="hidden"
       />
+      {error && (
+        <div className="mb-2 flex items-center gap-2 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
       {selectedFile ? (
         <div className="flex flex-col items-center gap-2">
           <Film className="h-10 w-10 text-primary" />

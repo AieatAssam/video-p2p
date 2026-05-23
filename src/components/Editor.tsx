@@ -9,13 +9,33 @@ import { EffectsPanel } from '@/components/EffectsPanel';
 import { ShareDialog } from '@/components/ShareDialog';
 import { FFmpegEngine } from '@/lib/ffmpeg';
 import { chainEffects, type EffectInput } from '@/lib/effects';
-import { cn as classNames } from '@/lib/utils';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { VideoInfo, Effect, EffectType, MediaFile } from '@/types';
 
 let effectIdCounter = 0;
 function genEffectId(): string {
   return `effect-${Date.now()}-${++effectIdCounter}`;
+}
+
+/**
+ * Maps UI-facing EffectType (kebab-case, from types/index.ts) to the 
+ * effects pipeline EffectType (camelCase, from effects.ts).
+ * The two modules define different union types with the same name,
+ * so this adapter bridges them without `as any` casts.
+ */
+const EFFECT_TYPE_MAP: Record<string, string> = {
+  'color-grade': 'colorGrade',
+  'text-overlay': 'textOverlay',
+  'chroma-key': 'chromaKey',
+  'audio-extract': 'audioExtract',
+  'audio-replace': 'audioReplace',
+  'gif-export': 'gif',
+  'frame-extract': 'frameExtract',
+  'split-screen': 'splitScreen',
+};
+
+function toPipelineType(uiType: EffectType): string {
+  return EFFECT_TYPE_MAP[uiType] ?? uiType;
 }
 
 export function Editor() {
@@ -86,7 +106,7 @@ export function Editor() {
       tempVideo.preload = 'metadata';
       const objectUrl = URL.createObjectURL(selectedFile);
 
-      await new Promise<void>((resolve) => {
+      const videoDuration = await new Promise<number>((resolve, reject) => {
         tempVideo.onloadedmetadata = () => {
           const info: VideoInfo = {
             width: tempVideo.videoWidth,
@@ -103,14 +123,15 @@ export function Editor() {
           setTrimEnd(tempVideo.duration);
           setCurrentTime(0);
           setEffects([]);
-          resolve();
+          resolve(tempVideo.duration);
         };
         tempVideo.onerror = () => {
-          // Fallback info
+          // Fallback info when video metadata can't be read
+          const fallbackDuration = 10;
           const info: VideoInfo = {
             width: 640,
             height: 480,
-            duration: 10,
+            duration: fallbackDuration,
             fps: 30,
             fileSize: selectedFile.size,
             hasAudio: true,
@@ -118,17 +139,17 @@ export function Editor() {
             name: selectedFile.name,
           };
           setVideoInfo(info);
-          setDuration(10);
-          setTrimEnd(10);
-          resolve();
+          setDuration(fallbackDuration);
+          setTrimEnd(fallbackDuration);
+          resolve(fallbackDuration);
         };
         tempVideo.src = objectUrl;
       });
 
-      // Extract thumbnails
+      // Extract thumbnails — pass duration directly instead of relying on React state
       setProcessingStatus('Extracting thumbnails...');
       try {
-        await extractThumbnails(engine, data, selectedFile.name);
+        await extractThumbnails(engine, data, videoDuration);
       } catch {
         // Thumbnails are optional
       }
@@ -146,7 +167,7 @@ export function Editor() {
   const extractThumbnails = async (
     engine: FFmpegEngine,
     data: Uint8Array,
-    filename: string
+    videoDuration: number
   ) => {
     const thumbs: string[] = [];
     const numThumbs = 10;
@@ -159,7 +180,7 @@ export function Editor() {
     }
 
     for (let i = 0; i < numThumbs; i++) {
-      const time = (duration / numThumbs) * i;
+      const time = (videoDuration / numThumbs) * i;
       const thumbFile = `thumb_${i}.png`;
       try {
         await engine.execCommand([
@@ -284,21 +305,22 @@ export function Editor() {
 
       try {
         setIsProcessing(true);
-        setProcessingStatus(`Exporting as ${format.toUpperCase()}...`);
+        const statusMsg = `Exporting as ${format.toUpperCase()}...`;
+        setProcessingStatus(statusMsg);
 
-        // Write input file
+        // Write input file to ffmpeg's virtual filesystem
         if (originalDataRef.current) {
           await engine.writeFile('input', originalDataRef.current);
         }
 
-        // Build effect chain from enabled effects
+        // Build effect chain from enabled effects, mapping UI types to pipeline types
         const activeEffects = effects.filter((e) => e.enabled);
         const effectInputs: EffectInput[] = activeEffects.map((e) => ({
-          type: e.type as any,
+          type: toPipelineType(e.type) as EffectInput['type'],
           params: e.params,
         }));
 
-        // Add trim if needed
+        // Prepend trim if needed (trim is handled via timeline, not effect list)
         if (trimStart > 0 || trimEnd < duration) {
           effectInputs.unshift({
             type: 'trim',
@@ -306,74 +328,86 @@ export function Editor() {
           });
         }
 
+        // Shared progress callback for ffmpeg operations
+        const onProgress = (event: { percent: number }) => {
+          setProcessingStatus(`${statusMsg} (${event.percent}%)`);
+        };
+
         let outputFile: string;
         let outputMime: string;
+        let successMessage: string;
 
         switch (format) {
           case 'mp4': {
             const args = chainEffects('input', effectInputs, 'output.mp4');
-            // Add codec options
             args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '23');
             if (videoInfo.hasAudio) {
               args.push('-c:a', 'aac', '-b:a', '128k');
             }
-            await engine.execCommand(args);
+            await engine.execCommand(args, onProgress);
             outputFile = 'output.mp4';
             outputMime = 'video/mp4';
+            successMessage = 'MP4 exported successfully!';
             break;
           }
-          case 'gif':
-            for (const e of effectInputs) {
-              if (e.type === 'gif') {
-                // Use GIF export params
-                const args = chainEffects('input', [e], 'output.gif');
-                await engine.execCommand(args);
-                break;
-              }
-            }
-            // If no gif effect, create a default GIF
-            if (!effectInputs.some((e) => e.type === 'gif')) {
-              const defaultGifEffect: EffectInput = {
-                type: 'gif',
-                params: { fps: 10, width: 480, dither: true },
-              };
-              const args = chainEffects('input', [...effectInputs, defaultGifEffect], 'output.gif');
-              await engine.execCommand(args);
-            }
+          case 'gif': {
+            // Find user-configured GIF effect, or use defaults
+            const gifEffect = effectInputs.find((e) => e.type === 'gif');
+            const params = gifEffect?.params ?? { fps: 10, width: 480, dither: true };
+            const otherEffects = effectInputs.filter((e) => e.type !== 'gif');
+            const gifInput: EffectInput = { type: 'gif', params };
+            const args = chainEffects('input', [...otherEffects, gifInput], 'output.gif');
+            await engine.execCommand(args, onProgress);
             outputFile = 'output.gif';
             outputMime = 'image/gif';
+            successMessage = 'GIF exported successfully!';
             break;
-          case 'audio':
-            for (const e of effectInputs) {
-              if (e.type === 'audioExtract') {
-                const formatStr = (e.params.format as string) ?? 'mp3';
-                const bitrate = (e.params.bitrate as number) ?? 192;
-                outputFile = `output.${formatStr}`;
-                outputMime = `audio/${formatStr === 'mp3' ? 'mpeg' : formatStr}`;
-                break;
-              }
-            }
-            // Default audio extract
-            outputFile = 'output.mp3';
-            outputMime = 'audio/mpeg';
+          }
+          case 'audio': {
+            // Find user-configured audio extract effect, or use defaults
+            const audioEffect = effectInputs.find((e) => e.type === 'audioExtract');
+            const audioFormat = (audioEffect?.params?.format as string) ?? 'mp3';
+            const bitrate = (audioEffect?.params?.bitrate as number) ?? 192;
+            outputFile = `output.${audioFormat}`;
+            outputMime = `audio/${audioFormat === 'mp3' ? 'mpeg' : audioFormat}`;
+            successMessage = 'Audio exported successfully!';
+
+            // Build audio-extraction command: strip video, keep audio with chosen codec
+            const formatCodecMap: Record<string, string> = {
+              mp3: 'libmp3lame',
+              wav: 'pcm_s16le',
+              aac: 'aac',
+              ogg: 'libvorbis',
+            };
+            const codec = formatCodecMap[audioFormat] ?? 'libmp3lame';
+            const args = chainEffects('input', effectInputs, outputFile);
+            // Override output codec for audio extraction
+            args.push('-vn', '-acodec', codec, '-b:a', `${bitrate}k`);
+            await engine.execCommand(args, onProgress);
             break;
+          }
         }
 
-        // Read back the output file
+        // Read back the output file and trigger browser download
         const outputData = await engine.readFile(outputFile);
         const blob = new Blob([outputData], { type: outputMime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = outputFile;
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        // Cleanup output file
+        // Cleanup output file from virtual filesystem
         await engine.deleteFile(outputFile);
 
-        setProcessingStatus('');
-        setIsProcessing(false);
+        setProcessingStatus(successMessage);
+        setTimeout(() => {
+          setProcessingStatus('');
+          setIsProcessing(false);
+        }, 2000);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Export failed';
         setLoadError(message);

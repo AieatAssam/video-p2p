@@ -18,19 +18,32 @@ export type EffectType =
   | 'audioExtract'
   | 'audioReplace';
 
+/** An effect as consumed by the ffmpeg pipeline — type and parameters. */
 export interface EffectInput {
   type: EffectType;
   params: Record<string, unknown>;
 }
 
+/**
+ * Builds ffmpeg arguments for trimming video by start/end time.
+ * Uses input seeking (-ss) for fast pre-roll and -to for end cut.
+ */
 export function buildTrimCommand(params: { start: number; end: number }): string[] {
   return ['-ss', String(params.start), '-to', String(params.end)];
 }
 
+/**
+ * Builds ffmpeg arguments for cropping a region of the video.
+ * Uses the crop filter: crop=width:height:x:y
+ */
 export function buildCropCommand(params: { x: number; y: number; width: number; height: number }): string[] {
   return ['-vf', `crop=${params.width}:${params.height}:${params.x}:${params.y}`];
 }
 
+/**
+ * Builds ffmpeg arguments for resizing video dimensions.
+ * Optionally preserves aspect ratio via force_original_aspect_ratio=decrease.
+ */
 export function buildResizeCommand(params: { width: number; height: number; keepAspect: boolean }): string[] {
   const { width, height, keepAspect } = params;
   let filter = `scale=${width}:${height}`;
@@ -40,6 +53,14 @@ export function buildResizeCommand(params: { width: number; height: number; keep
   return ['-vf', filter];
 }
 
+/**
+ * Builds ffmpeg arguments for speed adjustment with audio pitch correction.
+ *
+ * Video: uses setpts=N*PTS where N = 1/factor
+ * Audio: uses atempo filter (capped at 2x per instance; chains multiple for >2x)
+ *
+ * The chaining approach works around ffmpeg's single-atempo limit of [0.5, 2.0].
+ */
 export function buildSpeedCommand(params: { factor: number }): string[] {
   const { factor } = params;
   const ptsFactor = (1 / factor).toFixed(1);
@@ -108,10 +129,24 @@ export function buildTextOverlayCommand(params: { text: string; x: number; y: nu
   return ['-vf', `drawtext=${parts.join(':')}`];
 }
 
+/**
+ * Builds ffmpeg arguments for chroma key / green screen removal.
+ * Uses the colorkey filter: colorkey=color:similarity:blend
+ * - similarity: how close a pixel must match (lower = stricter)
+ * - blend: smoothing at the edge of the keyed area
+ */
 export function buildChromaKeyCommand(params: { color: string; similarity: number; blend: number }): string[] {
   return ['-vf', `colorkey=${params.color}:${params.similarity}:${params.blend.toFixed(1)}`];
 }
 
+/**
+ * Builds ffmpeg arguments for GIF export using two-pass palette generation.
+ *
+ * Pass 1: fps=N,scale=W:-1:flags=lanczos,palettegen  — generate optimized 256-color palette
+ * Pass 2: paletteuse=dither=bayer:bayer_scale=5       — encode with optional dithering
+ *
+ * This produces much higher quality than single-pass per-frame quantization.
+ */
 export function buildGIFCommand(params: { fps: number; width: number; dither: boolean }): string[] {
   const { fps, width, dither } = params;
   const baseFilter = `fps=${fps},scale=${width}:-1:flags=lanczos`;
@@ -137,6 +172,13 @@ export function buildConcatCommand(params: { files: string[]; transition?: { typ
   return args;
 }
 
+/**
+ * Builds ffmpeg arguments for side-by-side or picture-in-picture split screen.
+ *
+ * - side-by-side: uses hstack (horizontal stack of 2 inputs)
+ * - picture-in-picture: uses overlay filter with positional parameters
+ *   (W-w:H-h for bottom-right, 0:0 for top-left, etc.)
+ */
 export function buildSplitScreenCommand(params: { layout: string; position?: string; size?: number }): string[] {
   const { layout, position } = params;
 
@@ -171,6 +213,15 @@ export function buildGlitchCommand(params: { intensity: number; chromatic?: bool
   return ['-vf', `freezeframes=duration=${params.intensity}`];
 }
 
+/**
+ * Builds ffmpeg arguments for video stabilization.
+ *
+ * Uses a two-pass approach:
+ * 1. vidstabdetect — analyzes motion and writes transforms.trf
+ * 2. vidstabtransform — applies the stabilization using the analysis data
+ *
+ * Higher smoothness = smoother result but more cropping of edges.
+ */
 export function buildStabilizeCommand(params: { smoothness: number }): string[] {
   return [
     '-i', 'input', '-vf', `vidstabdetect=smoothness=${params.smoothness}`, '-f', 'null', '-',
@@ -218,6 +269,15 @@ function extractFilterString(args: string[]): string[] {
 /**
  * Build a complete ffmpeg command from an input file, a list of effects, and an output file.
  * Filters are combined into a single -filter_complex argument where possible.
+ *
+ * How it works:
+ * 1. Each effect builder produces ffmpeg arguments (-vf, -af, -filter_complex, or standalone args like -ss)
+ * 2. Video/audio filters are extracted from -vf/-af/-filter_complex flags and concatenated with commas
+ * 3. Non-filter arguments (-ss, -to, -i, codec flags) are kept as separate args
+ * 4. The final command is: -i input.mp4 [-filter_complex "filter1,filter2,..."] [extra args] output.mp4
+ *
+ * Comma-separated filters form a linear chain where each filter's output feeds the next.
+ * This avoids needing multiple ffmpeg passes — all effects apply in a single decode-encode cycle.
  */
 export function chainEffects(inputFile: string, effects: EffectInput[], outputFile: string): string[] {
   const filterParts: string[] = [];
