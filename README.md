@@ -70,27 +70,19 @@ npm run build
 
 ### Deployment
 
-> ⚠️ **GitHub Pages limitation**: GitHub Pages' CDN strips `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers, which ffmpeg.wasm requires for SharedArrayBuffer. The app works fully on the dev server and on platforms that support custom headers.
+> **GitHub Pages fully supported** — The app includes a service worker (`public/coi-serviceworker.js`) that injects the required COOP/COEP headers at the browser level on every page load. On your first visit, the page registers the service worker and reloads once to activate it. Subsequent visits work immediately.
 
-**Recommended: Netlify** (free, one-click)
+The app also deploys to **Netlify** or **Vercel** if preferred:
+
+**Netlify** (free)
 ```bash
-# Install Netlify CLI
-npm install -g netlify-cli
-
-# Deploy
 npx netlify deploy --prod --dir=dist
 ```
-The `netlify.toml` in the repo configures the required headers automatically.
 
-**Alternative: Vercel** (free, one-click)
+**Vercel** (free)
 ```bash
-# Install Vercel CLI
-npm install -g vercel
-
-# Deploy
 npx vercel --prod
 ```
-The `vercel.json` in the repo configures the required headers automatically.
 
 **Local dev server** (for testing without deployment):
 ```bash

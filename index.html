@@ -5,6 +5,28 @@
     <link rel="icon" type="image/svg+xml" href="/video-p2p/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VideoP2P — Edit & Share Videos in Browser</title>
+    <!-- Cross-Origin Isolation Service Worker
+         Injects COOP/COEP headers at the browser level so SharedArrayBuffer
+         works on GitHub Pages (which strips these headers from HTTP responses).
+         On first visit, the SW registers and reloads once to activate. -->
+    <script>
+    (function() {
+      // Only register if service workers are supported and not already controlled
+      if ('serviceWorker' in navigator && !navigator.serviceWorker.controller) {
+        navigator.serviceWorker.register('/video-p2p/coi-serviceworker.js')
+          .then((reg) => {
+            // If the SW was just installed, reload the page so it activates
+            if (reg.active && !navigator.serviceWorker.controller) {
+              window.location.reload();
+            }
+          })
+          .catch(() => {
+            // SW registration failed — cross-origin isolation won't be available
+            // The app will detect this and show a helpful error
+          });
+      }
+    })();
+    </script>
   </head>
   <body class="dark">
     <div id="root"></div>

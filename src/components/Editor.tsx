@@ -83,7 +83,8 @@ export function Editor() {
       if (message.includes('SharedArrayBuffer') || !crossOriginIsolated) {
         setLoadError(
           'FFmpeg requires cross-origin isolation (SharedArrayBuffer). ' +
-          'If this persists, ensure your browser supports it and try reloading.'
+          'A service worker was registered to provide this. ' +
+          'If this persists, try reloading the page.'
         );
       } else {
         setLoadError(`Failed to load FFmpeg: ${message}`);
