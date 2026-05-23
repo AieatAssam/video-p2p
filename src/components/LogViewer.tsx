@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Bug, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { Bug, ChevronDown, ChevronUp, Copy, Trash2 } from 'lucide-react';
 import type { LogEntry } from '@/types';
 
 interface LogViewerProps {
@@ -51,6 +51,23 @@ export function LogViewer({ logs, onClear, maxHeight = 300, className }: LogView
 
   const toggle = useCallback(() => setCollapsed((c) => !c), []);
 
+  const copyLogs = useCallback(() => {
+    const text = logs
+      .map((e) => `[${formatTime(e.timestamp)}] [${e.level.toUpperCase()}] ${e.message}`)
+      .join('\n');
+    navigator.clipboard.writeText(text).catch(() => {
+      // Fallback for clipboard API failure
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    });
+  }, [logs]);
+
   return (
     <div
       className={cn(
@@ -78,6 +95,16 @@ export function LogViewer({ logs, onClear, maxHeight = 300, className }: LogView
         </button>
 
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={copyLogs}
+            className="h-6 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+            aria-label="Copy log"
+          >
+            <Copy className="mr-1 h-3 w-3" />
+            Copy
+          </Button>
           <Button
             variant="ghost"
             size="sm"

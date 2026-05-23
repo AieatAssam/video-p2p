@@ -136,9 +136,13 @@ export function Editor() {
 
     const engine = ffmpegRef.current;
     if (!engine || !ffmpegLoaded) {
-      setLoadError('FFmpeg is not loaded yet. Please wait.');
+      const msg = !engine ? 'FFmpeg engine not initialized' : 'FFmpeg is not loaded yet. Please wait.';
+      addLog('warn', `File rejected: ${msg}`);
+      setLoadError(msg);
       return;
     }
+
+    addLog('info', `File selected: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB)`);
 
     try {
       setIsProcessing(true);
