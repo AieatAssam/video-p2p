@@ -100,9 +100,12 @@ export class FFmpegEngine {
     }
   }
 
-  /** Writes a file into ffmpeg's in-memory virtual filesystem. */
+  /** Writes a file into ffmpeg's in-memory virtual filesystem.
+   * Clones data internally to prevent ArrayBuffer detachment
+   * when postMessage transfers the buffer to the Web Worker.
+   */
   async writeFile(path: string, data: Uint8Array): Promise<void> {
-    await this.ffmpeg.writeFile(path, data);
+    await this.ffmpeg.writeFile(path, new Uint8Array(data));
   }
 
   /** Reads a file from ffmpeg's virtual filesystem. Throws if not found. */
