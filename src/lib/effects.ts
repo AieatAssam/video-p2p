@@ -63,20 +63,29 @@ export function buildResizeCommand(params: { width: number; height: number; keep
  */
 export function buildSpeedCommand(params: { factor: number }): string[] {
   const { factor } = params;
-  const ptsFactor = (1 / factor).toFixed(1);
+  const ptsFactor = (1 / factor).toFixed(3);
   const setpts = `setpts=${ptsFactor}*PTS`;
 
   let atempoFilter: string;
   if (factor > 2) {
-    // Chain multiple atempo=2.0 to exceed ffmpeg's single-filter limit
-    const count = Math.ceil(factor / 2);
+    // Chain atempo filters: first (n-1) atempo=2.0, last = factor / 2^(n-1)
+    // Each atempo is capped at [0.5, 2.0] by ffmpeg.
+    // Examples:
+    //   3x  → atempo=2.0,atempo=1.5  (2.0 × 1.5 = 3.0)
+    //   2.5 → atempo=2.0,atempo=1.25 (2.0 × 1.25 = 2.5)
+    //   4x  → atempo=2.0,atempo=2.0  (2.0 × 2.0 = 4.0)
+    const numFull = Math.floor(Math.log(factor) / Math.log(2));
+    const remaining = factor / Math.pow(2, numFull);
     const parts: string[] = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < numFull; i++) {
       parts.push('atempo=2.0');
+    }
+    if (remaining > 1.001) {
+      parts.push(`atempo=${remaining.toFixed(3)}`);
     }
     atempoFilter = parts.join(',');
   } else {
-    atempoFilter = `atempo=${factor.toFixed(1)}`;
+    atempoFilter = `atempo=${factor.toFixed(3)}`;
   }
 
   return ['-vf', setpts, '-af', atempoFilter];
@@ -246,20 +255,34 @@ export function buildAudioReplaceCommand(_params: { matchVideo: boolean }): stri
 }
 
 /**
- * Helper to extract filter arguments string from an effect builder function result.
- * Handles both -vf and -filter_complex outputs, extracting the filter value.
+ * Extracted filter info from an effect builder's arguments.
+ * Video and audio filters are kept separate so they can be applied
+ * via -filter_complex (video) and -af (audio) independently.
  */
-function extractFilterString(args: string[]): string[] {
-  const filters: string[] = [];
+interface ExtractedFilters {
+  /** Video filters to chain via -filter_complex */
+  video: string[];
+  /** Audio filters to chain via -af */
+  audio: string[];
+  /** Complex filter strings (from -filter_complex) for multi-input filters */
+  complex: string[];
+}
+
+/**
+ * Extract filter strings from effect builder result, separating
+ * -vf (video), -af (audio), and -filter_complex (complex) args.
+ */
+function extractFilterStrings(args: string[]): ExtractedFilters {
+  const filters: ExtractedFilters = { video: [], audio: [], complex: [] };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '-vf' && i + 1 < args.length) {
-      filters.push(args[i + 1]);
-      i++; // skip the value
+      filters.video.push(args[i + 1]);
+      i++;
     } else if (args[i] === '-af' && i + 1 < args.length) {
-      filters.push(args[i + 1]);
+      filters.audio.push(args[i + 1]);
       i++;
     } else if (args[i] === '-filter_complex' && i + 1 < args.length) {
-      filters.push(args[i + 1]);
+      filters.complex.push(args[i + 1]);
       i++;
     }
   }
@@ -268,8 +291,8 @@ function extractFilterString(args: string[]): string[] {
 
 /**
  * Build a complete ffmpeg command from an input file, a list of effects, and an output file.
- * Filters are combined into a single -filter_complex argument where possible.
- *
+ * Video and audio filters are kept in separate chains to avoid invalid filter graphs
+ * (e.g., mixing video-only filters like reverse with audio-only filters like arevere).
  * How it works:
  * 1. Each effect builder produces ffmpeg arguments (-vf, -af, -filter_complex, or standalone args like -ss)
  * 2. Video/audio filters are extracted from -vf/-af/-filter_complex flags and concatenated with commas
@@ -280,7 +303,8 @@ function extractFilterString(args: string[]): string[] {
  * This avoids needing multiple ffmpeg passes — all effects apply in a single decode-encode cycle.
  */
 export function chainEffects(inputFile: string, effects: EffectInput[], outputFile: string): string[] {
-  const filterParts: string[] = [];
+  const videoFilters: string[] = [];
+  const audioFilters: string[] = [];
   const extraArgs: string[] = [];
 
   for (const effect of effects) {
@@ -292,53 +316,65 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
       }
       case 'crop': {
         const args = buildCropCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'resize': {
         const args = buildResizeCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'speed': {
         const args = buildSpeedCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
+        audioFilters.push(...extracted.audio);
         break;
       }
       case 'reverse': {
         const args = buildReverseCommand();
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
+        audioFilters.push(...extracted.audio);
         break;
       }
       case 'colorGrade': {
         const args = buildColorGradeCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'filter': {
         const preset = effect.params.preset as string;
         const args = buildFilterCommand(preset);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'blur': {
         const args = buildBlurCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'pixelate': {
         const args = buildPixelateCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'textOverlay': {
         const args = buildTextOverlayCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'chromaKey': {
         const args = buildChromaKeyCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'gif': {
@@ -353,12 +389,15 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
       }
       case 'splitScreen': {
         const args = buildSplitScreenCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
+        videoFilters.push(...extracted.complex);
         break;
       }
       case 'glitch': {
         const args = buildGlitchCommand(effect.params as any);
-        filterParts.push(...extractFilterString(args));
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'stabilize': {
@@ -381,8 +420,11 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
 
   const result: string[] = ['-i', inputFile];
 
-  if (filterParts.length > 0) {
-    result.push('-filter_complex', filterParts.join(','));
+  if (videoFilters.length > 0) {
+    result.push('-filter_complex', videoFilters.join(','));
+  }
+  if (audioFilters.length > 0) {
+    result.push('-af', audioFilters.join(','));
   }
 
   result.push(...extraArgs);
