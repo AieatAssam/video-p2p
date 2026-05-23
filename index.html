@@ -5,54 +5,29 @@
     <link rel="icon" type="image/svg+xml" href="/video-p2p/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VideoP2P — Edit & Share Videos in Browser</title>
-    <!-- Cross-Origin Isolation Service Worker
-         Injects COOP/COEP headers at the browser level so SharedArrayBuffer
-         works on GitHub Pages (which strips these headers from HTTP responses).
-         On first visit, the SW registers and reloads once to activate. -->
-    <style>
-      /* Setup overlay — shown during initial SW registration before reload */
-      #coi-setup {
-        position: fixed; inset: 0; z-index: 9999;
-        display: flex; flex-direction: column;
-        align-items: center; justify-content: center;
-        background: #09090b; color: #fafafa;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        transition: opacity 0.3s;
-      }
-      #coi-setup.hidden { opacity: 0; pointer-events: none; }
-      #coi-setup h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
-      #coi-setup p { font-size: 0.875rem; color: #a1a1aa; margin-bottom: 1.5rem; }
-      .spinner { width: 24px; height: 24px; border: 3px solid #27272a; border-top-color: #fafafa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 1rem; }
-      @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
     <script>
+    // Cross-Origin Isolation Service Worker
+    // Injects COOP/COEP headers at browser level for SharedArrayBuffer.
+    // On first visit: register SW, reload once to activate it.
     (function() {
-      // On first visit: register SW, reload once, show setup overlay.
-      // sessionStorage flag prevents infinite reload loop.
       if ('serviceWorker' in navigator && !sessionStorage.getItem('coi-done')) {
         sessionStorage.setItem('coi-done', '1');
         navigator.serviceWorker.register('/video-p2p/coi-serviceworker.js')
           .then(function(reg) {
             if (reg.active && !navigator.serviceWorker.controller) {
-              // Show the overlay immediately before reload
-              var el = document.getElementById('coi-setup');
-              if (el) el.classList.remove('hidden');
-              setTimeout(function() { window.location.reload(); }, 300);
+              window.location.reload();
             }
           })
           .catch(function() {
-            // SW failed — cross-origin isolation won't be available
+            // SW registration failed — clear flag, React will detect
+            // missing cross-origin isolation and show an error message
+            sessionStorage.removeItem('coi-done');
           });
       }
     })();
     </script>
   </head>
   <body>
-    <div id="coi-setup">
-      <div class="spinner"></div>
-      <h1>Setting up browser features…</h1>
-      <p>One-time setup required for video processing</p>
-    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

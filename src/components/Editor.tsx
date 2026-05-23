@@ -88,16 +88,25 @@ export function Editor() {
     });
 
     // Detect first-load SW setup: if the coi-serviceworker just registered
-    // and hasn't activated yet, crossOriginIsolated is false and ffmpeg's
-    // SharedArrayBuffer requirement won't be met. The SW registration script
-    // in index.html handles this with a reload — we just show a clean setup
-    // message instead of trying to load ffmpeg and failing cryptically.
-    if (!crossOriginIsolated && sessionStorage.getItem('coi-done') === '1') {
-      addLog('info', 'Cross-origin isolation not yet active — service worker setup in progress. Page will reload automatically.');
+    // and the page is about to reload (coi-done flag set but isolation not
+    // yet active), show a clean message instead of a cryptic error.
+    if (sessionStorage.getItem('coi-done') === '1' && !crossOriginIsolated) {
+      addLog('info', 'Cross-origin isolation not yet active — waiting for service worker setup reload.');
       setLoadError(
-        'Setting up cross-origin isolation for video processing... ' +
-        'The page will reload once. This only happens on the first visit.'
+        'Setting up browser features for video processing… ' +
+        'The page will reload automatically. This only happens on the first visit.'
       );
+      // If the SW reload doesn't happen within 3s, clear the flag and let
+      // the normal error flow take over (SW registration probably failed).
+      setTimeout(() => {
+        sessionStorage.removeItem('coi-done');
+        if (!crossOriginIsolated) {
+          setLoadError(
+            'This browser does not support the video processing features required. ' +
+            'Please use Chrome, Firefox, or Edge.'
+          );
+        }
+      }, 3000);
       return;
     }
 
