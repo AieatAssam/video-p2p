@@ -64,9 +64,8 @@ export class FFmpegEngine {
     try {
       const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
       const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
-      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
 
-      await this.ffmpeg.load({ coreURL, wasmURL, workerURL });
+      await this.ffmpeg.load({ coreURL, wasmURL });
       this.loaded = true;
       this.lastError = null;
     } catch (error) {
