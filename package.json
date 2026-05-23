@@ -5,14 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/postbuild.mjs",
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:ui": "vitest --ui",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext ts,tsx"
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.10",
