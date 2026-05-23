@@ -58,7 +58,7 @@ cd video-p2p
 # Install
 npm install
 
-# Dev server
+# Dev server (COOP/COEP headers auto-configured via Vite)
 npm run dev
 
 # Tests
@@ -67,6 +67,36 @@ npm test
 # Build
 npm run build
 ```
+
+### Deployment
+
+> ⚠️ **GitHub Pages limitation**: GitHub Pages' CDN strips `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers, which ffmpeg.wasm requires for SharedArrayBuffer. The app works fully on the dev server and on platforms that support custom headers.
+
+**Recommended: Netlify** (free, one-click)
+```bash
+# Install Netlify CLI
+npm install -g netlify-cli
+
+# Deploy
+npx netlify deploy --prod --dir=dist
+```
+The `netlify.toml` in the repo configures the required headers automatically.
+
+**Alternative: Vercel** (free, one-click)
+```bash
+# Install Vercel CLI
+npm install -g vercel
+
+# Deploy
+npx vercel --prod
+```
+The `vercel.json` in the repo configures the required headers automatically.
+
+**Local dev server** (for testing without deployment):
+```bash
+npm run dev
+```
+Opens at `http://localhost:5173/video-p2p/` with full ffmpeg.wasm support.
 
 ### Usage
 
