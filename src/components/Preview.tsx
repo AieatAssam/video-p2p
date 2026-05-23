@@ -100,6 +100,7 @@ export function Preview({
           size="icon"
           onClick={handlePlayPause}
           className="text-white hover:bg-white/20"
+          aria-label={isPlaying ? 'Pause video' : 'Play video'}
         >
           {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
         </Button>

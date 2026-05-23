@@ -125,6 +125,7 @@ export function Toolbar({
             onClick={() => onExport(exportFormat)}
             disabled={!videoInfo || isProcessing}
             className="gap-1"
+            aria-label={`Export as ${exportFormat.toUpperCase()}`}
           >
             {getExportIcon()}
             Export
@@ -138,6 +139,7 @@ export function Toolbar({
           onClick={onShareClick}
           disabled={!videoInfo}
           className="gap-1"
+          aria-label="Share video via peer-to-peer"
         >
           <Share2 className="h-4 w-4" />
           Share

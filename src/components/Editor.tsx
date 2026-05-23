@@ -57,6 +57,15 @@ export function Editor() {
   const ffmpegRef = useRef<FFmpegEngine | null>(null);
   const originalDataRef = useRef<Uint8Array | null>(null);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Revoke any object URLs to prevent memory leaks
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      thumbnails.forEach((t) => URL.revokeObjectURL(t));
+    };
+  }, [previewUrl, thumbnails]);
+
   // Initialize FFmpeg
   useEffect(() => {
     const engine = new FFmpegEngine();
@@ -101,12 +110,12 @@ export function Editor() {
       setPreviewUrl(url);
 
       // Determine video info from the file
-      // We use a temporary video element to get metadata
+      // We use a temporary video element to get metadata (same URL as preview)
       const tempVideo = document.createElement('video');
       tempVideo.preload = 'metadata';
-      const objectUrl = URL.createObjectURL(selectedFile);
+      tempVideo.src = url;
 
-      const videoDuration = await new Promise<number>((resolve, reject) => {
+      const videoDuration = await new Promise<number>((resolve) => {
         tempVideo.onloadedmetadata = () => {
           const info: VideoInfo = {
             width: tempVideo.videoWidth,
@@ -143,7 +152,7 @@ export function Editor() {
           setTrimEnd(fallbackDuration);
           resolve(fallbackDuration);
         };
-        tempVideo.src = objectUrl;
+        tempVideo.src = url;
       });
 
       // Extract thumbnails — pass duration directly instead of relying on React state

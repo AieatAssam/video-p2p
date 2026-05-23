@@ -169,6 +169,24 @@ export function Timeline({
           className="absolute top-0 z-10 h-full w-1 cursor-ew-resize bg-primary opacity-80 hover:opacity-100"
           style={{ left: `${trimStartPercent}%` }}
           onMouseDown={handleTrimStartMouseDown}
+          onKeyDown={(e) => {
+            if (!onTrimChange) return;
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              const newStart = Math.max(0, trimStart - 0.5);
+              onTrimChange(newStart, effectiveTrimEnd);
+            } else if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              const newStart = Math.min(effectiveTrimEnd - 0.1, trimStart + 0.5);
+              onTrimChange(newStart, effectiveTrimEnd);
+            }
+          }}
+          role="slider"
+          tabIndex={0}
+          aria-label="Trim start handle"
+          aria-valuemin={0}
+          aria-valuemax={effectiveTrimEnd}
+          aria-valuenow={trimStart}
         >
           <div className="absolute left-1/2 top-1/2 h-4 w-2 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-primary" />
         </div>
@@ -178,6 +196,24 @@ export function Timeline({
           className="absolute top-0 z-10 h-full w-1 cursor-ew-resize bg-primary opacity-80 hover:opacity-100"
           style={{ left: `${trimEndPercent}%` }}
           onMouseDown={handleTrimEndMouseDown}
+          onKeyDown={(e) => {
+            if (!onTrimChange) return;
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              const newEnd = Math.max(trimStart + 0.1, effectiveTrimEnd - 0.5);
+              onTrimChange(trimStart, newEnd);
+            } else if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              const newEnd = Math.min(duration, effectiveTrimEnd + 0.5);
+              onTrimChange(trimStart, newEnd);
+            }
+          }}
+          role="slider"
+          tabIndex={0}
+          aria-label="Trim end handle"
+          aria-valuemin={trimStart}
+          aria-valuemax={duration}
+          aria-valuenow={effectiveTrimEnd}
         >
           <div className="absolute left-1/2 top-1/2 h-4 w-2 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-primary" />
         </div>
@@ -187,6 +223,22 @@ export function Timeline({
           className="absolute top-0 z-20 h-full w-0.5 cursor-grab bg-foreground"
           style={{ left: `${playheadPercent}%` }}
           onMouseDown={handlePlayheadMouseDown}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              onSeek(Math.max(0, currentTime - 0.5));
+            } else if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              onSeek(Math.min(duration, currentTime + 0.5));
+            }
+          }}
+          role="slider"
+          tabIndex={0}
+          aria-label="Playhead position"
+          aria-valuemin={0}
+          aria-valuemax={duration}
+          aria-valuenow={currentTime}
+          aria-valuetext={formatTime(currentTime)}
         >
           <div className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 rounded-full bg-foreground" />
         </div>

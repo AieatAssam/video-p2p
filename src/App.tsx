@@ -77,7 +77,7 @@ function App() {
           <Video className="w-4 h-4 text-primary" />
           <h1 className="font-semibold text-sm">VideoP2P</h1>
         </div>
-        <Button variant="ghost" size="sm" onClick={handleBack} className="text-xs">
+        <Button variant="ghost" size="sm" onClick={handleBack} className="text-xs" aria-label="Back to file selection">
           New Video
         </Button>
       </header>

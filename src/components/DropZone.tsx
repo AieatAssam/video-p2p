@@ -88,6 +88,10 @@ export function DropZone({ onFileSelected, accept = 'video/*', className }: Drop
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      role="button"
+      tabIndex={0}
+      aria-label="Drop video file here or click to browse"
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(); } }}
       className={cn(
         'flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-12 transition-colors',
         isDragOver
