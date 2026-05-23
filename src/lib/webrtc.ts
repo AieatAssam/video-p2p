@@ -70,7 +70,7 @@ export class WebRTCShare {
     await this.pc.setLocalDescription(offer);
 
     this.state = 'waiting-answer';
-    return offer.sdp;
+    return offer.sdp ?? '';
   }
 
   /**
@@ -95,7 +95,7 @@ export class WebRTCShare {
     await this.pc.setLocalDescription(answer);
 
     this.state = 'connecting';
-    return answer.sdp;
+    return answer.sdp ?? '';
   }
 
   /**

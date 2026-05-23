@@ -49,7 +49,7 @@ function App() {
                 and share videos peer-to-peer with zero backend.
               </p>
             </div>
-            <DropZone onFileSelect={handleFileSelect} />
+            <DropZone onFileSelected={handleFileSelect} />
             <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
               <div className="rounded-lg border border-border p-3 text-left space-y-1">
                 <span className="text-foreground font-medium block">🎬 20+ Effects</span>
@@ -82,7 +82,7 @@ function App() {
         </Button>
       </header>
       <main className="flex-1 flex overflow-hidden">
-        <Editor file={videoFile!} />
+        <Editor />
       </main>
     </div>
   );
