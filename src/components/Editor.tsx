@@ -1,0 +1,493 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { DropZone } from '@/components/DropZone';
+import { Toolbar } from '@/components/Toolbar';
+import { Timeline } from '@/components/Timeline';
+import { Preview } from '@/components/Preview';
+import { EffectsPanel } from '@/components/EffectsPanel';
+import { ShareDialog } from '@/components/ShareDialog';
+import { FFmpegEngine } from '@/lib/ffmpeg';
+import { chainEffects, type EffectInput } from '@/lib/effects';
+import { cn as classNames } from '@/lib/utils';
+import { Loader2, AlertCircle } from 'lucide-react';
+import type { VideoInfo, Effect, EffectType, MediaFile } from '@/types';
+
+let effectIdCounter = 0;
+function genEffectId(): string {
+  return `effect-${Date.now()}-${++effectIdCounter}`;
+}
+
+export function Editor() {
+  const [file, setFile] = useState<File | null>(null);
+  const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [effects, setEffects] = useState<Effect[]>([]);
+  const [previewUrl, setPreviewUrl] = useState<string>('');
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState('');
+  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
+
+  const ffmpegRef = useRef<FFmpegEngine | null>(null);
+  const originalDataRef = useRef<Uint8Array | null>(null);
+
+  // Initialize FFmpeg
+  useEffect(() => {
+    const engine = new FFmpegEngine();
+    ffmpegRef.current = engine;
+
+    engine.load().then(() => {
+      setFfmpegLoaded(true);
+    }).catch((err: Error) => {
+      setLoadError(err.message);
+    });
+
+    return () => {
+      engine.terminate();
+    };
+  }, []);
+
+  // Handle file selection
+  const handleFileSelected = useCallback(async (selectedFile: File) => {
+    setFile(selectedFile);
+    setLoadError(null);
+
+    const engine = ffmpegRef.current;
+    if (!engine || !ffmpegLoaded) {
+      setLoadError('FFmpeg is not loaded yet. Please wait.');
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      setProcessingStatus('Loading file...');
+
+      // Load file into ffmpeg virtual filesystem
+      const data = await engine.loadFile(selectedFile);
+      originalDataRef.current = data;
+      await engine.writeFile('input', data);
+
+      // Extract video info using ffprobe via ffmpeg
+      setProcessingStatus('Analyzing video...');
+
+      // Create object URL for preview
+      const url = URL.createObjectURL(selectedFile);
+      setPreviewUrl(url);
+
+      // Determine video info from the file
+      // We use a temporary video element to get metadata
+      const tempVideo = document.createElement('video');
+      tempVideo.preload = 'metadata';
+      const objectUrl = URL.createObjectURL(selectedFile);
+
+      await new Promise<void>((resolve) => {
+        tempVideo.onloadedmetadata = () => {
+          const info: VideoInfo = {
+            width: tempVideo.videoWidth,
+            height: tempVideo.videoHeight,
+            duration: tempVideo.duration,
+            fps: 30,
+            fileSize: selectedFile.size,
+            hasAudio: true,
+            codec: 'h264',
+            name: selectedFile.name,
+          };
+          setVideoInfo(info);
+          setDuration(tempVideo.duration);
+          setTrimEnd(tempVideo.duration);
+          setCurrentTime(0);
+          setEffects([]);
+          resolve();
+        };
+        tempVideo.onerror = () => {
+          // Fallback info
+          const info: VideoInfo = {
+            width: 640,
+            height: 480,
+            duration: 10,
+            fps: 30,
+            fileSize: selectedFile.size,
+            hasAudio: true,
+            codec: 'h264',
+            name: selectedFile.name,
+          };
+          setVideoInfo(info);
+          setDuration(10);
+          setTrimEnd(10);
+          resolve();
+        };
+        tempVideo.src = objectUrl;
+      });
+
+      // Extract thumbnails
+      setProcessingStatus('Extracting thumbnails...');
+      try {
+        await extractThumbnails(engine, data, selectedFile.name);
+      } catch {
+        // Thumbnails are optional
+      }
+
+      setProcessingStatus('');
+      setIsProcessing(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load file';
+      setLoadError(message);
+      setIsProcessing(false);
+      setProcessingStatus('');
+    }
+  }, [ffmpegLoaded]);
+
+  const extractThumbnails = async (
+    engine: FFmpegEngine,
+    data: Uint8Array,
+    filename: string
+  ) => {
+    const thumbs: string[] = [];
+    const numThumbs = 10;
+
+    // Write original data if not already written
+    try {
+      await engine.writeFile('input', data);
+    } catch {
+      // File may already exist
+    }
+
+    for (let i = 0; i < numThumbs; i++) {
+      const time = (duration / numThumbs) * i;
+      const thumbFile = `thumb_${i}.png`;
+      try {
+        await engine.execCommand([
+          '-i', 'input',
+          '-ss', String(time),
+          '-vframes', '1',
+          '-vf', 'scale=160:-1',
+          thumbFile,
+        ]);
+        const thumbData = await engine.readFile(thumbFile);
+        const blob = new Blob([thumbData], { type: 'image/png' });
+        thumbs.push(URL.createObjectURL(blob));
+        await engine.deleteFile(thumbFile);
+      } catch {
+        // Skip failed thumbnails
+      }
+    }
+
+    setThumbnails(thumbs);
+  };
+
+  // Effect handlers
+  const handleAddEffect = useCallback((type: EffectType) => {
+    const defaultParams: Record<string, unknown> = {};
+    switch (type) {
+      case 'trim':
+        defaultParams.start = trimStart;
+        defaultParams.end = trimEnd;
+        break;
+      case 'crop':
+        defaultParams.x = 0;
+        defaultParams.y = 0;
+        defaultParams.width = videoInfo?.width ?? 640;
+        defaultParams.height = videoInfo?.height ?? 480;
+        break;
+      case 'resize':
+        defaultParams.width = videoInfo?.width ?? 640;
+        defaultParams.height = videoInfo?.height ?? 480;
+        defaultParams.keepAspect = true;
+        break;
+      case 'speed':
+        defaultParams.factor = 1;
+        break;
+      case 'reverse':
+        break;
+      case 'filter':
+        defaultParams.preset = 'none';
+        break;
+      case 'color-grade':
+        defaultParams.brightness = 0;
+        defaultParams.contrast = 1;
+        defaultParams.saturation = 1;
+        defaultParams.gamma = 1;
+        break;
+      case 'blur':
+        defaultParams.radius = 5;
+        break;
+      case 'pixelate':
+        defaultParams.blockSize = 10;
+        break;
+      case 'text-overlay':
+        defaultParams.text = 'Your Text';
+        defaultParams.x = 10;
+        defaultParams.y = 10;
+        defaultParams.fontSize = 24;
+        defaultParams.color = '#ffffff';
+        break;
+      case 'chroma-key':
+        defaultParams.color = '#00ff00';
+        defaultParams.similarity = 0.1;
+        defaultParams.blend = 0;
+        break;
+      case 'gif-export':
+        defaultParams.fps = 10;
+        defaultParams.width = 480;
+        defaultParams.dither = true;
+        break;
+      case 'audio-extract':
+        defaultParams.format = 'mp3';
+        defaultParams.bitrate = 192;
+        break;
+      case 'audio-replace':
+        defaultParams.matchVideo = true;
+        break;
+      case 'stabilize':
+        defaultParams.smoothness = 5;
+        break;
+      default:
+        break;
+    }
+
+    const newEffect: Effect = {
+      id: genEffectId(),
+      type,
+      params: defaultParams,
+      enabled: true,
+    };
+    setEffects((prev) => [...prev, newEffect]);
+  }, [trimStart, trimEnd, videoInfo]);
+
+  const handleRemoveEffect = useCallback((id: string) => {
+    setEffects((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
+  const handleUpdateEffect = useCallback((id: string, params: Record<string, unknown>) => {
+    setEffects((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, params } : e))
+    );
+  }, []);
+
+  const handleToggleEffect = useCallback((id: string) => {
+    setEffects((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, enabled: !e.enabled } : e))
+    );
+  }, []);
+
+  // Export handler
+  const handleExport = useCallback(
+    async (format: 'mp4' | 'gif' | 'audio') => {
+      const engine = ffmpegRef.current;
+      if (!engine || !file || !videoInfo) return;
+
+      try {
+        setIsProcessing(true);
+        setProcessingStatus(`Exporting as ${format.toUpperCase()}...`);
+
+        // Write input file
+        if (originalDataRef.current) {
+          await engine.writeFile('input', originalDataRef.current);
+        }
+
+        // Build effect chain from enabled effects
+        const activeEffects = effects.filter((e) => e.enabled);
+        const effectInputs: EffectInput[] = activeEffects.map((e) => ({
+          type: e.type as any,
+          params: e.params,
+        }));
+
+        // Add trim if needed
+        if (trimStart > 0 || trimEnd < duration) {
+          effectInputs.unshift({
+            type: 'trim',
+            params: { start: trimStart, end: trimEnd },
+          });
+        }
+
+        let outputFile: string;
+        let outputMime: string;
+
+        switch (format) {
+          case 'mp4': {
+            const args = chainEffects('input', effectInputs, 'output.mp4');
+            // Add codec options
+            args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '23');
+            if (videoInfo.hasAudio) {
+              args.push('-c:a', 'aac', '-b:a', '128k');
+            }
+            await engine.execCommand(args);
+            outputFile = 'output.mp4';
+            outputMime = 'video/mp4';
+            break;
+          }
+          case 'gif':
+            for (const e of effectInputs) {
+              if (e.type === 'gif') {
+                // Use GIF export params
+                const args = chainEffects('input', [e], 'output.gif');
+                await engine.execCommand(args);
+                break;
+              }
+            }
+            // If no gif effect, create a default GIF
+            if (!effectInputs.some((e) => e.type === 'gif')) {
+              const defaultGifEffect: EffectInput = {
+                type: 'gif',
+                params: { fps: 10, width: 480, dither: true },
+              };
+              const args = chainEffects('input', [...effectInputs, defaultGifEffect], 'output.gif');
+              await engine.execCommand(args);
+            }
+            outputFile = 'output.gif';
+            outputMime = 'image/gif';
+            break;
+          case 'audio':
+            for (const e of effectInputs) {
+              if (e.type === 'audioExtract') {
+                const formatStr = (e.params.format as string) ?? 'mp3';
+                const bitrate = (e.params.bitrate as number) ?? 192;
+                outputFile = `output.${formatStr}`;
+                outputMime = `audio/${formatStr === 'mp3' ? 'mpeg' : formatStr}`;
+                break;
+              }
+            }
+            // Default audio extract
+            outputFile = 'output.mp3';
+            outputMime = 'audio/mpeg';
+            break;
+        }
+
+        // Read back the output file
+        const outputData = await engine.readFile(outputFile);
+        const blob = new Blob([outputData], { type: outputMime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = outputFile;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        // Cleanup output file
+        await engine.deleteFile(outputFile);
+
+        setProcessingStatus('');
+        setIsProcessing(false);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Export failed';
+        setLoadError(message);
+        setIsProcessing(false);
+        setProcessingStatus('');
+      }
+    },
+    [file, videoInfo, effects, trimStart, trimEnd, duration]
+  );
+
+  // Share handler
+  const handleShareClick = useCallback(() => {
+    setShareDialogOpen(true);
+  }, []);
+
+  const mediaFile: MediaFile | null = file
+    ? {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        data: new ArrayBuffer(0), // Will be populated when sending
+      }
+    : null;
+
+  return (
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      {/* Header */}
+      <header className="flex items-center justify-between border-b px-4 py-2">
+        <h1 className="text-lg font-bold">Video P2P Editor</h1>
+        {!ffmpegLoaded && !loadError && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading FFmpeg...
+          </div>
+        )}
+        {loadError && (
+          <div className="flex items-center gap-2 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4" />
+            {loadError}
+          </div>
+        )}
+      </header>
+
+      {/* Toolbar */}
+      <Toolbar
+        videoInfo={videoInfo}
+        onExport={handleExport}
+        onShareClick={handleShareClick}
+        isProcessing={isProcessing}
+        className="mx-4 mt-2"
+      />
+
+      {/* Main content */}
+      <div className="flex flex-1 gap-4 overflow-hidden p-4">
+        {/* Left panel: Preview + Timeline */}
+        <div className="flex flex-1 flex-col gap-4 overflow-hidden">
+          <Preview
+            src={previewUrl}
+            currentTime={currentTime}
+            onTimeUpdate={setCurrentTime}
+            onDurationChange={setDuration}
+            className="flex-1"
+          />
+
+          {file && (
+            <Timeline
+              duration={duration}
+              currentTime={currentTime}
+              onSeek={setCurrentTime}
+              trimStart={trimStart}
+              trimEnd={trimEnd}
+              onTrimChange={(start, end) => {
+                setTrimStart(start);
+                setTrimEnd(end);
+              }}
+              thumbnails={thumbnails}
+            />
+          )}
+        </div>
+
+        {/* Right panel: Drop zone or Effects */}
+        <div className="w-80 overflow-y-auto">
+          {!file ? (
+            <DropZone onFileSelected={handleFileSelected} className="h-full" />
+          ) : (
+            <EffectsPanel
+              effects={effects}
+              onAddEffect={handleAddEffect}
+              onRemoveEffect={handleRemoveEffect}
+              onUpdateEffect={handleUpdateEffect}
+              onToggleEffect={handleToggleEffect}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Processing overlay */}
+      {isProcessing && processingStatus && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="flex items-center gap-3 rounded-lg bg-card p-6 shadow-lg">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <span className="text-sm font-medium">{processingStatus}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Share dialog */}
+      <ShareDialog
+        open={shareDialogOpen}
+        onOpenChange={setShareDialogOpen}
+        file={mediaFile}
+      />
+    </div>
+  );
+}
+
+export default Editor;
