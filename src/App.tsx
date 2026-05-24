@@ -82,7 +82,7 @@ function App() {
         </Button>
       </header>
       <main className="flex-1 flex overflow-hidden">
-        <Editor />
+        <Editor initialFile={videoFile} />
       </main>
     </div>
   );

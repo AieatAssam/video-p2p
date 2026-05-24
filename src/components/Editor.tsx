@@ -39,7 +39,7 @@ function toPipelineType(uiType: EffectType): string {
   return EFFECT_TYPE_MAP[uiType] ?? uiType;
 }
 
-export function Editor() {
+export function Editor({ initialFile }: { initialFile?: File | null }) {
   const [file, setFile] = useState<File | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [effects, setEffects] = useState<Effect[]>([]);
@@ -144,6 +144,15 @@ export function Editor() {
       engine.terminate();
     };
   }, [initFfmpeg]);
+
+  // Process file from the landing page automatically on mount
+  useEffect(() => {
+    if (initialFile && !file) {
+      handleFileSelected(initialFile);
+    }
+    // Only run on mount when initialFile is provided
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFile]);
 
   /** Retry ffmpeg.wasm loading after a failure. */
   const handleRetryFfmpeg = useCallback(async () => {
@@ -724,9 +733,7 @@ export function Editor() {
 
         {/* Right panel: Drop zone or Effects — full width on mobile, 320px on desktop */}
         <div className="w-full md:w-80 shrink-0 overflow-y-auto">
-          {!file ? (
-            <DropZone onFileSelected={handleFileSelected} className="h-full" />
-          ) : (
+          {file ? (
             <EffectsPanel
               effects={effects}
               onAddEffect={handleAddEffect}
@@ -734,6 +741,15 @@ export function Editor() {
               onUpdateEffect={handleUpdateEffect}
               onToggleEffect={handleToggleEffect}
             />
+          ) : initialFile ? (
+            <div className="flex h-full items-center justify-center p-8">
+              <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-6 w-6 animate-spin" />
+                <span>Preparing editor...</span>
+              </div>
+            </div>
+          ) : (
+            <DropZone onFileSelected={handleFileSelected} className="h-full" />
           )}
         </div>
       </div>
