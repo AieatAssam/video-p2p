@@ -1,7 +1,7 @@
 import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Play, Pause } from 'lucide-react';
+import { Play, Pause, AlertTriangle } from 'lucide-react';
 
 interface PreviewProps {
   src?: string;
@@ -23,27 +23,53 @@ export function Preview({
   const [localCurrentTime, setLocalCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isSeeking, setIsSeeking] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
-  // Sync external currentTime to video element
+  // Sync external currentTime to video element when scrubbing the timeline.
+  // External seeks always override regardless of isSeeking — otherwise fast drags
+  // during an in-progress seek are swallowed, making the playhead seem unresponsive.
   useEffect(() => {
-    if (videoRef.current && currentTime !== undefined && !isSeeking) {
-      const diff = Math.abs(videoRef.current.currentTime - currentTime);
-      if (diff > 0.5) {
-        videoRef.current.currentTime = currentTime;
+    const video = videoRef.current;
+    if (!video || currentTime === undefined) return;
+    const diff = Math.abs(video.currentTime - currentTime);
+    if (diff > 0.1) {
+      video.currentTime = currentTime;
+    }
+  }, [currentTime]);
+
+  const doPlay = useCallback(async (video: HTMLVideoElement) => {
+    // Autoplay policies and unsupported codecs can cause play() to reject.
+    // We catch the rejection to surface it rather than swallowing it silently.
+    try {
+      await video.play();
+      setIsPlaying(true);
+      setPlaybackError(null);
+    } catch (err) {
+      setIsPlaying(false);
+      const msg = (err as { name?: string; message?: string })?.message ?? String(err);
+      // NotAllowedError = autoplay policy (user gesture needed) — recoverable
+      // NotSupportedError = codec not supported by browser — permanent
+      if (msg.includes('NotAllowedError') || msg.includes('user gesture')) {
+        setPlaybackError('Click play to start (browser requires interaction)');
+      } else {
+        setPlaybackError(
+          `Playback failed — this video codec may not be supported by your browser. ` +
+          `Try MP4 export or a different browser.`
+        );
       }
     }
-  }, [currentTime, isSeeking]);
+  }, []);
 
   const handlePlayPause = useCallback(() => {
-    if (!videoRef.current) return;
-    if (videoRef.current.paused) {
-      videoRef.current.play();
-      setIsPlaying(true);
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      doPlay(video);
     } else {
-      videoRef.current.pause();
+      video.pause();
       setIsPlaying(false);
     }
-  }, []);
+  }, [doPlay]);
 
   const handleTimeUpdate = useCallback(() => {
     if (!videoRef.current || isSeeking) return;
@@ -55,15 +81,34 @@ export function Preview({
   const handleLoadedMetadata = useCallback(() => {
     if (!videoRef.current) return;
     const dur = videoRef.current.duration;
-    setDuration(dur);
-    onDurationChange?.(dur);
+    if (isFinite(dur) && dur > 0) {
+      setDuration(dur);
+      onDurationChange?.(dur);
+    }
+    setPlaybackError(null);
   }, [onDurationChange]);
+
+  const handleVideoError = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const mediaError = video.error;
+    if (mediaError) {
+      setPlaybackError(
+        mediaError.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+          ? `Video codec not supported — this browser can't play this format. Try a different browser or export to MP4.`
+          : `Video error: ${mediaError.message || 'Unknown error'}`
+      );
+    } else {
+      setPlaybackError('Video playback error');
+    }
+  }, []);
 
   const handleEnded = useCallback(() => {
     setIsPlaying(false);
   }, []);
 
   const formatTime = (seconds: number): string => {
+    if (!isFinite(seconds) || seconds < 0) return '0:00';
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
@@ -73,11 +118,12 @@ export function Preview({
   useEffect(() => {
     setIsPlaying(false);
     setLocalCurrentTime(0);
+    setPlaybackError(null);
   }, [src]);
 
   return (
     <div className={cn('relative flex flex-col overflow-hidden rounded-lg bg-black', className)}>
-      {/* Video element */}
+      {/* Video element — muted helps autoplay policies */}
       <video
         ref={videoRef}
         src={src}
@@ -85,12 +131,14 @@ export function Preview({
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
+        onError={handleVideoError}
         onSeeking={() => setIsSeeking(true)}
         onSeeked={() => setIsSeeking(false)}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         controls={false}
         playsInline
+        muted
       />
 
       {/* Overlay controls — only show when a video is loaded */}
@@ -108,6 +156,14 @@ export function Preview({
           <span className="text-xs text-white/80">
             {formatTime(localCurrentTime)} / {formatTime(duration)}
           </span>
+        </div>
+      )}
+
+      {/* Playback error banner */}
+      {playbackError && (
+        <div className="absolute left-0 right-0 top-0 flex items-center gap-2 bg-destructive/90 p-2 text-xs text-destructive-foreground">
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          <span>{playbackError}</span>
         </div>
       )}
 

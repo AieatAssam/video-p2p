@@ -164,28 +164,43 @@ describe('Effects Pipeline', () => {
   });
 
   describe('buildGIFCommand', () => {
-    it('generates a palettegen + paletteuse two-pass command', () => {
-      const args = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      const cmd = args.join(' ');
-      // Must include palettegen
-      expect(cmd).toContain('palettegen');
-      // Must include paletteuse
-      expect(cmd).toContain('paletteuse');
-      // Must include the palette output filename
-      expect(cmd).toContain('palette.png');
-      // Must include fps and scale
-      expect(cmd).toContain('fps=10');
-      expect(cmd).toContain('scale=480:-1');
+    it('generates palettegen in pass1', () => {
+      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
+      const pass1 = result.pass1.join(' ');
+      expect(pass1).toContain('palettegen');
+      expect(pass1).toContain('palette.png');
+      expect(pass1).toContain('fps=10');
+      expect(pass1).toContain('scale=480:-1');
     });
 
-    it('includes dither when enabled', () => {
-      const args = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      expect(args.join(' ')).toContain('bayer');
+    it('generates paletteuse in pass2', () => {
+      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
+      const pass2 = result.pass2.join(' ');
+      expect(pass2).toContain('paletteuse');
+      expect(pass2).toContain('-i palette.png');
+      expect(pass2).toContain('fps=10');
+      expect(pass2).toContain('scale=480:-1');
     });
 
-    it('omits dither when disabled', () => {
-      const args = buildGIFCommand({ fps: 10, width: 480, dither: false });
-      expect(args.join(' ')).not.toContain('bayer');
+    it('includes dither in pass2 when enabled', () => {
+      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
+      expect(result.pass2.join(' ')).toContain('bayer');
+    });
+
+    it('omits dither in pass2 when disabled', () => {
+      const result = buildGIFCommand({ fps: 10, width: 480, dither: false });
+      expect(result.pass2.join(' ')).not.toContain('bayer');
+    });
+
+    it('pass1 includes -vf flag', () => {
+      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
+      expect(result.pass1[0]).toBe('-vf');
+    });
+
+    it('pass2 starts with palette.png input', () => {
+      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
+      expect(result.pass2[0]).toBe('-i');
+      expect(result.pass2[1]).toBe('palette.png');
     });
   });
 
@@ -278,20 +293,18 @@ describe('Effects Pipeline', () => {
       expect(cmd).toContain('areverse');
     });
 
-    it('handles GIF command without duplicate -i input', () => {
+    it('skips GIF effect in chainEffects (handled separately in Editor)', () => {
       const effects: EffectInput[] = [
         { type: 'gif', params: { fps: 10, width: 480, dither: true } },
       ];
       const args = chainEffects('input.mp4', effects, 'output.gif');
       const cmd = args.join(' ');
-      // Should only have EXACTLY one -i input
-      const inputFlags = cmd.match(/-i\s+\S+/g);
-      // chainEffects adds -i input.mp4 at start, buildGIFCommand may add more
-      // But total should be appropriate for the GIF pipeline
-      expect(cmd).toContain('palettegen');
-      expect(cmd).toContain('paletteuse');
-      // The output should end with output.gif
-      expect(args[args.length - 1]).toBe('output.gif');
+      // chainEffects should NOT include any GIF-specific args
+      expect(cmd).not.toContain('palettegen');
+      expect(cmd).not.toContain('paletteuse');
+      expect(cmd).not.toContain('palette.png');
+      // Should just be a pass-through with input and output
+      expect(cmd).toBe('-i input.mp4 output.gif');
     });
 
     it('handles blur + colorGrade chain', () => {

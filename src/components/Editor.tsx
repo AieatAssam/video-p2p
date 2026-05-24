@@ -66,6 +66,7 @@ export function Editor() {
 
   const ffmpegRef = useRef<FFmpegEngine | null>(null);
   const fileDataRef = useRef<File | null>(null);
+  const ffmpegLoadedRef = useRef(false);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -114,6 +115,7 @@ export function Editor() {
       addLog('info', 'Loading ffmpeg.wasm (core-mt)...');
       await engine.load();
       setFfmpegLoaded(true);
+      ffmpegLoadedRef.current = true;
       setLoadError(null);
       addLog('info', 'ffmpeg.wasm loaded successfully');
     } catch (err) {
@@ -159,11 +161,28 @@ export function Editor() {
     setLoadError(null);
 
     const engine = ffmpegRef.current;
-    if (!engine || !ffmpegLoaded) {
-      const msg = !engine ? 'FFmpeg engine not initialized' : 'FFmpeg is not loaded yet. Please wait.';
-      addLog('warn', `File rejected: ${msg}`);
-      setLoadError(msg);
+    if (!engine) {
+      addLog('warn', 'FFmpeg engine not initialized');
+      setLoadError('FFmpeg engine not initialized');
       return;
+    }
+
+    if (!ffmpegLoadedRef.current) {
+      addLog('info', 'Waiting for FFmpeg to initialize before loading video...');
+      setProcessingStatus('Loading FFmpeg...');
+      // Wait for ffmpeg to finish loading — the useEffect that starts initFfmpeg
+      // runs asynchronously, so the first file selection may arrive before it's ready.
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (ffmpegLoadedRef.current) {
+            resolve();
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      });
+      addLog('info', 'FFmpeg ready, loading video...');
     }
 
     addLog('info', `File selected: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB)`);
@@ -526,13 +545,28 @@ export function Editor() {
             break;
           }
           case 'gif': {
-            // Find user-configured GIF effect, or use defaults
+            // GIF two-pass palette workflow: palettegen writes palette.png to VFS,
+            // then paletteuse reads it. Must be TWO execCommand calls because ffmpeg
+            // opens ALL inputs before writing any output.
             const gifEffect = effectInputs.find((e) => e.type === 'gif');
-            const params = gifEffect?.params ?? { fps: 10, width: 480, dither: true };
+            const { fps = 10, width = 480, dither = true } = (gifEffect?.params ?? {}) as { fps?: number; width?: number; dither?: boolean };
             const otherEffects = effectInputs.filter((e) => e.type !== 'gif');
-            const gifInput: EffectInput = { type: 'gif', params };
-            const args = chainEffects('input', [...otherEffects, gifInput], 'output.gif');
-            await engine.execCommand(args, onExportProgress);
+            const gifCmd = buildGIFCommand({ fps, width, dither });
+
+            // Pass 1: generate palette.png in VFS
+            const pass1Args = chainEffects('input', otherEffects, 'palette.png');
+            pass1Args.pop(); // remove chainEffects' default output, use gifCmd's palette output instead
+            pass1Args.push(...gifCmd.pass1);
+            addLog('info', `GIF pass 1: palettegen`);
+            await engine.execCommand(pass1Args, onExportProgress);
+
+            // Pass 2: use palette.png to encode output.gif
+            const pass2Args = chainEffects('input', otherEffects, 'output.gif');
+            pass2Args.pop(); // remove chainEffects' output, we supply our own below
+            pass2Args.push(...gifCmd.pass2, 'output.gif');
+            addLog('info', `GIF pass 2: paletteuse`);
+            await engine.execCommand(pass2Args, onExportProgress);
+
             outputFile = 'output.gif';
             outputMime = 'image/gif';
             successMessage = 'GIF exported successfully!';
@@ -579,6 +613,10 @@ export function Editor() {
         await engine.deleteFile(outputFile);
         // Also free the input file from the virtual filesystem
         try { await engine.deleteFile('input'); } catch { /* ignore */ }
+        // Clean up palette.png if this was a GIF export
+        if (format === 'gif') {
+          try { await engine.deleteFile('palette.png'); } catch { /* ignore */ }
+        }
 
         setProcessingStatus(successMessage);
         setTimeout(() => {

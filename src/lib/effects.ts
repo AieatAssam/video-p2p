@@ -151,12 +151,21 @@ export function buildChromaKeyCommand(params: { color: string; similarity: numbe
 /**
  * Builds ffmpeg arguments for GIF export using two-pass palette generation.
  *
- * Pass 1: fps=N,scale=W:-1:flags=lanczos,palettegen  — generate optimized 256-color palette
- * Pass 2: paletteuse=dither=bayer:bayer_scale=5       — encode with optional dithering
+ * Two-pass workflow (TWO separate execCommand calls — palette.png lives in VFS):
+ *   Pass 1: fps=N,scale=W:-1:flags=lanczos,palettegen  — generate optimized 256-color palette
+ *   Pass 2: paletteuse=dither=bayer:bayer_scale=5       — encode with optional dithering
  *
- * This produces much higher quality than single-pass per-frame quantization.
+ * Returns separate pass arrays because ffmpeg opens ALL inputs before writing ANY output,
+ * so a single combined command would fail: '-i palette.png' can't exist yet.
  */
-export function buildGIFCommand(params: { fps: number; width: number; dither: boolean }): string[] {
+export function buildGIFCommand(params: { fps: number; width: number; dither: boolean }): {
+  /** Args for pass 1 (palettegen): to be appended after base effects + '-i input'.
+   *  Produces palette.png in the VFS. */
+  pass1: string[];
+  /** Args for pass 2 (paletteuse): to be appended after base effects + '-i input'.
+   *  Reads palette.png from VFS via '-i palette.png'. Output filename goes at the end. */
+  pass2: string[];
+} {
   const { fps, width, dither } = params;
   const baseFilter = `fps=${fps},scale=${width}:-1:flags=lanczos`;
   const paletteGen = `${baseFilter},palettegen`;
@@ -164,10 +173,10 @@ export function buildGIFCommand(params: { fps: number; width: number; dither: bo
     ? `${baseFilter}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5`
     : `${baseFilter}[x];[x][1:v]paletteuse`;
 
-  return [
-    '-i', 'input', '-vf', paletteGen, 'palette.png',
-    '-i', 'input', '-i', 'palette.png', '-filter_complex', paletteUse,
-  ];
+  return {
+    pass1: ['-vf', paletteGen, 'palette.png'],
+    pass2: ['-i', 'palette.png', '-filter_complex', paletteUse],
+  };
 }
 
 export function buildConcatCommand(params: { files: string[]; transition?: { type: string; duration: number } }): string[] {
@@ -378,8 +387,8 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
         break;
       }
       case 'gif': {
-        const args = buildGIFCommand(effect.params as any);
-        extraArgs.push(...args);
+        // GIF export uses two-pass palettegen/paletteuse which requires
+        // TWO separate execCommand calls — handled in Editor.tsx export handler.
         break;
       }
       case 'concat': {
