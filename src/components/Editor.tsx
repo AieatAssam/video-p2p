@@ -157,6 +157,8 @@ export function Editor() {
 
   // Handle file selection
   const handleFileSelected = useCallback(async (selectedFile: File) => {
+    addLog('info', `📁 File picked: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB)`);
+
     setFile(selectedFile);
     setLoadError(null);
 
@@ -184,8 +186,6 @@ export function Editor() {
       });
       addLog('info', 'FFmpeg ready, loading video...');
     }
-
-    addLog('info', `File selected: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB)`);
 
     try {
       setIsProcessing(true);
@@ -277,6 +277,7 @@ export function Editor() {
       // Ensure virtual filesystem is clean
       try { await engine.deleteFile('input'); } catch { /* ignore */ }
 
+      addLog('info', `Video loaded: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB, ${videoDuration.toFixed(1)}s)`);
       setProcessingStatus('');
       setIsProcessing(false);
     } catch (err) {
