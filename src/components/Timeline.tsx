@@ -1,6 +1,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Slider } from '@/components/ui/slider';
+import type { LogEntry } from '@/types';
 
 interface TimelineProps {
   duration: number;
@@ -11,6 +12,7 @@ interface TimelineProps {
   trimEnd?: number;
   thumbnails?: string[];
   className?: string;
+  onLog?: (level: LogEntry['level'], message: string) => void;
 }
 
 export function Timeline({
@@ -22,6 +24,7 @@ export function Timeline({
   trimEnd,
   thumbnails,
   className,
+  onLog,
 }: TimelineProps) {
   const effectiveTrimEnd = trimEnd ?? duration;
   const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
@@ -49,9 +52,10 @@ export function Timeline({
     (e: React.MouseEvent) => {
       if (isDraggingTrimStart || isDraggingTrimEnd) return;
       const time = getPositionFromEvent(e.clientX);
+      onLog?.('info', `⏪ Track click seek to ${time.toFixed(1)}s`);
       onSeek(time);
     },
-    [getPositionFromEvent, isDraggingTrimStart, isDraggingTrimEnd, onSeek]
+    [getPositionFromEvent, isDraggingTrimStart, isDraggingTrimEnd, onSeek, onLog]
   );
 
   const handleTrimStartMouseDown = useCallback(
@@ -91,7 +95,9 @@ export function Timeline({
         onTrimChange(trimStart, clampedEnd);
       } else if (draggingPlayhead) {
         const time = getPositionFromEvent(e.clientX);
-        onSeek(Math.max(0, Math.min(time, duration)));
+        const clamped = Math.max(0, Math.min(time, duration));
+        onLog?.('info', `⏪ Playhead drag seek to ${clamped.toFixed(1)}s`);
+        onSeek(clamped);
       }
     };
 
@@ -226,10 +232,14 @@ export function Timeline({
           onKeyDown={(e) => {
             if (e.key === 'ArrowLeft') {
               e.preventDefault();
-              onSeek(Math.max(0, currentTime - 0.5));
+              const newTime = Math.max(0, currentTime - 0.5);
+              onLog?.('info', `⏪ Keyboard seek ← to ${newTime.toFixed(1)}s`);
+              onSeek(newTime);
             } else if (e.key === 'ArrowRight') {
               e.preventDefault();
-              onSeek(Math.min(duration, currentTime + 0.5));
+              const newTime = Math.min(duration, currentTime + 0.5);
+              onLog?.('info', `⏪ Keyboard seek → to ${newTime.toFixed(1)}s`);
+              onSeek(newTime);
             }
           }}
           role="slider"
@@ -250,7 +260,10 @@ export function Timeline({
         min={0}
         max={duration}
         step={0.1}
-        onValueChange={([v]) => onSeek(v)}
+        onValueChange={([v]) => {
+          onLog?.('info', `⏪ Slider seek to ${v.toFixed(1)}s`);
+          onSeek(v);
+        }}
         className="w-full"
       />
     </div>

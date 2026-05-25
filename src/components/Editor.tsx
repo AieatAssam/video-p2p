@@ -8,7 +8,7 @@ import { Preview } from '@/components/Preview';
 import { EffectsPanel } from '@/components/EffectsPanel';
 import { ShareDialog } from '@/components/ShareDialog';
 import { FFmpegEngine } from '@/lib/ffmpeg';
-import { chainEffects, type EffectInput } from '@/lib/effects';
+import { chainEffects, buildGIFCommand, type EffectInput } from '@/lib/effects';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { LogViewer } from '@/components/LogViewer';
 import type { VideoInfo, Effect, EffectType, MediaFile, LogEntry } from '@/types';
@@ -372,9 +372,28 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
           }
         });
 
-        // Draw the current frame to canvas at thumbnail size
+        // Wait for the next animation frame so the browser actually
+        // composites the decoded frame before we drawImage it.
+        // Without this, drawImage captures a black/empty frame because
+        // seeked fires before the decoder delivers the pixel data.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => {
+            // requestAnimationFrame alone isn't always enough — a second
+            // microtask yields the render pipeline time to finish decoding
+            requestAnimationFrame(() => resolve());
+          });
+        });
+
+        // Guard against dimensions not being available yet
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (!vw || !vh) {
+          addLog('warn', `Thumbnail ${i}: video dimensions not ready (${vw}x${vh}), using 16:9 fallback`);
+        }
         const thumbWidth = 160;
-        const thumbHeight = Math.round((thumbWidth / video.videoWidth) * video.videoHeight);
+        const thumbHeight = vw && vh
+          ? Math.round((thumbWidth / vw) * vh)
+          : Math.round(thumbWidth * (9 / 16));
         canvas.width = thumbWidth;
         canvas.height = thumbHeight;
         ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
@@ -712,6 +731,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             currentTime={currentTime}
             onTimeUpdate={setCurrentTime}
             onDurationChange={setDuration}
+            onLog={addLog}
             className="flex-1 min-h-[200px]"
           />
 
@@ -720,6 +740,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
               duration={duration}
               currentTime={currentTime}
               onSeek={setCurrentTime}
+              onLog={addLog}
               trimStart={trimStart}
               trimEnd={trimEnd}
               onTrimChange={(start, end) => {

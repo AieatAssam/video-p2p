@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Play, Pause, AlertTriangle } from 'lucide-react';
+import type { LogEntry } from '@/types';
 
 interface PreviewProps {
   src?: string;
@@ -9,6 +10,7 @@ interface PreviewProps {
   onTimeUpdate?: (time: number) => void;
   onDurationChange?: (duration: number) => void;
   className?: string;
+  onLog?: (level: LogEntry['level'], message: string) => void;
 }
 
 export function Preview({
@@ -17,6 +19,7 @@ export function Preview({
   onTimeUpdate,
   onDurationChange,
   className,
+  onLog,
 }: PreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -33,24 +36,55 @@ export function Preview({
     if (!video || currentTime === undefined) return;
     const diff = Math.abs(video.currentTime - currentTime);
     if (diff > 0.1) {
+      onLog?.('debug', `🎯 Syncing video.currentTime: ${video.currentTime.toFixed(2)} → ${currentTime.toFixed(2)} (diff=${diff.toFixed(2)})`);
       video.currentTime = currentTime;
     }
-  }, [currentTime]);
+  }, [currentTime, onLog]);
 
   const doPlay = useCallback(async (video: HTMLVideoElement) => {
     // Autoplay policies and unsupported codecs can cause play() to reject.
     // We catch the rejection to surface it rather than swallowing it silently.
+    onLog?.('info', '▶️ Play requested');
     try {
+      // Check readyState before attempting play
+      if (video.readyState < 2) {
+        onLog?.('warn', `play() called but readyState=${video.readyState} (HAVE_CURRENT_DATA=2 needed), waiting for canplay...`);
+        await new Promise<void>((resolve) => {
+          const onCanPlay = () => {
+            video.removeEventListener('canplay', onCanPlay);
+            resolve();
+          };
+          video.addEventListener('canplay', onCanPlay);
+          // If already ready by the time we check
+          if (video.readyState >= 2) {
+            video.removeEventListener('canplay', onCanPlay);
+            resolve();
+          }
+        });
+        onLog?.('info', '⏳ Waited for canplay, now attempting play()');
+      }
       await video.play();
       setIsPlaying(true);
       setPlaybackError(null);
+      onLog?.('info', '▶️ Playback started successfully');
     } catch (err) {
       setIsPlaying(false);
-      const msg = (err as { name?: string; message?: string })?.message ?? String(err);
+      const errorObj = err as { name?: string; message?: string; code?: number };
+      const msg = errorObj?.message ?? String(err);
+      const name = errorObj?.name ?? '';
+      // Log the full error details to the debug panel
+      onLog?.('error', `▶️ Playback failed: ${name ? `[${name}] ` : ''}${msg}`);
       // NotAllowedError = autoplay policy (user gesture needed) — recoverable
       // NotSupportedError = codec not supported by browser — permanent
-      if (msg.includes('NotAllowedError') || msg.includes('user gesture')) {
+      if (msg.includes('NotAllowedError') || name === 'NotAllowedError' || msg.includes('user gesture')) {
         setPlaybackError('Click play to start (browser requires interaction)');
+        onLog?.('warn', 'Playback blocked by autoplay policy — user gesture required');
+      } else if (msg.includes('NotSupportedError') || name === 'NotSupportedError') {
+        setPlaybackError(
+          `Playback failed — this video codec may not be supported by your browser. ` +
+          `Try MP4 export or a different browser.`
+        );
+        onLog?.('error', 'Codec not supported by browser for real-time playback');
       } else {
         setPlaybackError(
           `Playback failed — this video codec may not be supported by your browser. ` +
@@ -58,7 +92,7 @@ export function Preview({
         );
       }
     }
-  }, []);
+  }, [onLog]);
 
   const handlePlayPause = useCallback(() => {
     const video = videoRef.current;
@@ -93,15 +127,27 @@ export function Preview({
     if (!video) return;
     const mediaError = video.error;
     if (mediaError) {
+      const codeNames: Record<number, string> = {
+        1: 'MEDIA_ERR_ABORTED',
+        2: 'MEDIA_ERR_NETWORK',
+        3: 'MEDIA_ERR_DECODE',
+        4: 'MEDIA_ERR_SRC_NOT_SUPPORTED',
+      };
+      const codeName = codeNames[mediaError.code] ?? `Unknown(${mediaError.code})`;
+      const detail = mediaError.message ? ` — ${mediaError.message}` : '';
+      onLog?.('error', `🎬 Video element error [${codeName}]${detail}`);
+      onLog?.('debug', `🎬 networkState=${video.networkState} readyState=${video.readyState} src="${video.currentSrc || '(none)'}"`);
+
       setPlaybackError(
         mediaError.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
           ? `Video codec not supported — this browser can't play this format. Try a different browser or export to MP4.`
-          : `Video error: ${mediaError.message || 'Unknown error'}`
+          : `Video error (${codeName}): ${mediaError.message || 'Unknown error'}`
       );
     } else {
+      onLog?.('error', '🎬 Video playback error (no mediaError object)');
       setPlaybackError('Video playback error');
     }
-  }, []);
+  }, [onLog]);
 
   const handleEnded = useCallback(() => {
     setIsPlaying(false);
