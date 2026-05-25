@@ -165,6 +165,10 @@ export function buildGIFCommand(params: { fps: number; width: number; dither: bo
   /** Filter string for pass 2 (paletteuse): uses stream labels [v] and [1:v].
    *  Requires -filter_complex with -i palette.png as the second input. */
   pass2Filter: string;
+  /** The scaling + fps prefix (without palette logic).
+   *  Should be prepended BEFORE other filters so effects run on
+   *  scaled-down frames instead of 4K originals — much faster. */
+  scaleFilter: string;
 } {
   const { fps, width, dither } = params;
   const baseFilter = `fps=${fps},scale=${width}:-1:flags=lanczos`;
@@ -176,6 +180,7 @@ export function buildGIFCommand(params: { fps: number; width: number; dither: bo
   return {
     pass1Filter: paletteGen,
     pass2Filter: paletteUse,
+    scaleFilter: baseFilter,
   };
 }
 

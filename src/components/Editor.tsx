@@ -604,18 +604,21 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             }
 
             // Helper: build the final args for each pass
+            // IMPORTANT: prepend the GIF's scale filter BEFORE other effects so
+            // pixel-level operations (chroma-key, blur, etc.) run on small frames
+            // instead of full 4K — this is exponentially faster in ffmpeg.wasm.
+            const existingVideoFilter = fcIdx >= 0 ? baseArgs[fcIdx + 1]
+              : vfIdx >= 0 ? baseArgs[vfIdx + 1]
+              : null;
+
             const buildPass1Args = (): string[] => {
               const args: string[] = ['-i', 'input'];
               args.push(...extraArgs);
 
-              if (fcIdx >= 0) {
-                // There's an existing filter_complex — append palettegen to it
-                const existingFilter = baseArgs[fcIdx + 1];
-                args.push('-filter_complex', `${existingFilter},${gifCmd.pass1Filter}`);
-              } else if (vfIdx >= 0) {
-                // There's an existing -vf — must use -filter_complex to combine with palettegen
-                const existingFilter = baseArgs[vfIdx + 1];
-                args.push('-filter_complex', `${existingFilter},${gifCmd.pass1Filter}`);
+              if (existingVideoFilter) {
+                // Scale FIRST, then existing effects, then palettegen
+                // e.g. fps=10,scale=480:-1,colorkey=...,palettegen
+                args.push('-filter_complex', `${gifCmd.scaleFilter},${existingVideoFilter},palettegen`);
               } else {
                 // No video filters at all — just palettegen
                 args.push('-vf', gifCmd.pass1Filter);
@@ -629,12 +632,10 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
               const args: string[] = ['-i', 'input'];
               args.push(...extraArgs);
 
-              if (fcIdx >= 0) {
-                const existingFilter = baseArgs[fcIdx + 1];
-                args.push('-filter_complex', `${existingFilter}[v];${gifCmd.pass2Filter}`);
-              } else if (vfIdx >= 0) {
-                const existingFilter = baseArgs[vfIdx + 1];
-                args.push('-filter_complex', `${existingFilter}[v];${gifCmd.pass2Filter}`);
+              if (existingVideoFilter) {
+                // Scale FIRST, then existing effects with [v] label, then paletteuse
+                // e.g. fps=10,scale=480:-1,colorkey=...[v];[v][1:v]paletteuse=...
+                args.push('-filter_complex', `${gifCmd.scaleFilter},${existingVideoFilter}[v];${gifCmd.pass2Filter.split(';')[1]}`);
               } else {
                 args.push('-filter_complex', gifCmd.pass2Filter);
               }
