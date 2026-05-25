@@ -46,30 +46,8 @@ export function Preview({
     // We catch the rejection to surface it rather than swallowing it silently.
     onLog?.('info', '▶️ Play requested');
     try {
-      // Check readyState before attempting play
-      if (video.readyState < 2) {
-        onLog?.('warn', `play() called but readyState=${video.readyState} (HAVE_CURRENT_DATA=2 needed), waiting for canplay...`);
-        // Add a timeout so we don't hang forever — some codecs return metadata
-        // but can't actually decode frames (e.g., HEVC on non-Apple browsers).
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            video.removeEventListener('canplay', onCanPlay);
-            reject(new Error('Timed out waiting for video to be playable — codec may not be supported'));
-          }, 5000);
-          const onCanPlay = () => {
-            clearTimeout(timeout);
-            video.removeEventListener('canplay', onCanPlay);
-            resolve();
-          };
-          video.addEventListener('canplay', onCanPlay);
-          // If already ready by the time we check
-          if (video.readyState >= 2) {
-            clearTimeout(timeout);
-            video.removeEventListener('canplay', onCanPlay);
-            resolve();
-          }
-        });
-        onLog?.('info', '⏳ Waited for canplay, now attempting play()');
+      if (onLog) {
+        onLog('debug', `🎬 readyState=${video.readyState} before play()`);
       }
       await video.play();
       setIsPlaying(true);
@@ -87,7 +65,7 @@ export function Preview({
       if (msg.includes('NotAllowedError') || name === 'NotAllowedError' || msg.includes('user gesture')) {
         setPlaybackError('Click play to start (browser requires interaction)');
         onLog?.('warn', 'Playback blocked by autoplay policy — user gesture required');
-      } else if (msg.includes('NotSupportedError') || name === 'NotSupportedError' || msg.includes('codec may not be supported') || msg.includes('Timed out waiting')) {
+      } else if (msg.includes('NotSupportedError') || name === 'NotSupportedError') {
         setPlaybackError(
           `Playback failed — this video codec may not be supported by your browser. ` +
           `Try MP4 export or a different browser.`
