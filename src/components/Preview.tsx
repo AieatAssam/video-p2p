@@ -31,9 +31,14 @@ export function Preview({
   // Sync external currentTime to video element when scrubbing the timeline.
   // External seeks always override regardless of isSeeking — otherwise fast drags
   // during an in-progress seek are swallowed, making the playhead seem unresponsive.
+  // BUT: don't seek while the video is playing — setting currentTime during a pending
+  // play() aborts it with AbortError. The seek will take effect on the next pause.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || currentTime === undefined) return;
+    // Skip syncing if the video is currently playing or has a pending play() —
+    // otherwise the seek would abort the play promise with an AbortError.
+    if (!video.paused) return;
     const diff = Math.abs(video.currentTime - currentTime);
     if (diff > 0.1) {
       onLog?.('debug', `🎯 Syncing video.currentTime: ${video.currentTime.toFixed(2)} → ${currentTime.toFixed(2)} (diff=${diff.toFixed(2)})`);
@@ -44,40 +49,53 @@ export function Preview({
   const doPlay = useCallback(async (video: HTMLVideoElement) => {
     // Autoplay policies and unsupported codecs can cause play() to reject.
     // We catch the rejection to surface it rather than swallowing it silently.
-    onLog?.('info', '▶️ Play requested');
-    try {
-      if (onLog) {
-        onLog('debug', `🎬 readyState=${video.readyState} before play()`);
+    const tryPlay = async (attempt: number): Promise<void> => {
+      onLog?.('info', `▶️ Play requested (attempt ${attempt + 1})`);
+      try {
+        if (onLog) {
+          onLog('debug', `🎬 readyState=${video.readyState} before play()`);
+        }
+        await video.play();
+        setIsPlaying(true);
+        setPlaybackError(null);
+        onLog?.('info', '▶️ Playback started successfully');
+      } catch (err) {
+        const errorObj = err as { name?: string; message?: string; code?: number };
+        const msg = errorObj?.message ?? String(err);
+        const name = errorObj?.name ?? '';
+        onLog?.('error', `▶️ Playback failed: ${name ? `[${name}] ` : ''}${msg}`);
+
+        // AbortError means something interrupted the play (seek, pause).
+        // Retry with a short delay — the browser just needs time to buffer
+        // at the new position after a seek.
+        if ((name === 'AbortError' || msg.includes('AbortError')) && attempt < 2) {
+          onLog?.('info', '⏳ Play was interrupted — retrying in 500ms...');
+          await new Promise((r) => setTimeout(r, 500));
+          return tryPlay(attempt + 1);
+        }
+
+        // NotAllowedError = autoplay policy (user gesture needed) — recoverable
+        // NotSupportedError = codec not supported by browser — permanent
+        if (msg.includes('NotAllowedError') || name === 'NotAllowedError' || msg.includes('user gesture')) {
+          setPlaybackError('Click play to start (browser requires interaction)');
+          onLog?.('warn', 'Playback blocked by autoplay policy — user gesture required');
+        } else if (msg.includes('NotSupportedError') || name === 'NotSupportedError') {
+          setPlaybackError(
+            `Playback failed — this video codec may not be supported by your browser. ` +
+            `Try MP4 export or a different browser.`
+          );
+          onLog?.('error', 'Codec not supported by browser for real-time playback');
+        } else {
+          setIsPlaying(false);
+          setPlaybackError(
+            `Playback failed — this video codec may not be supported by your browser. ` +
+            `Try MP4 export or a different browser.`
+          );
+        }
       }
-      await video.play();
-      setIsPlaying(true);
-      setPlaybackError(null);
-      onLog?.('info', '▶️ Playback started successfully');
-    } catch (err) {
-      setIsPlaying(false);
-      const errorObj = err as { name?: string; message?: string; code?: number };
-      const msg = errorObj?.message ?? String(err);
-      const name = errorObj?.name ?? '';
-      // Log the full error details to the debug panel
-      onLog?.('error', `▶️ Playback failed: ${name ? `[${name}] ` : ''}${msg}`);
-      // NotAllowedError = autoplay policy (user gesture needed) — recoverable
-      // NotSupportedError = codec not supported by browser — permanent
-      if (msg.includes('NotAllowedError') || name === 'NotAllowedError' || msg.includes('user gesture')) {
-        setPlaybackError('Click play to start (browser requires interaction)');
-        onLog?.('warn', 'Playback blocked by autoplay policy — user gesture required');
-      } else if (msg.includes('NotSupportedError') || name === 'NotSupportedError') {
-        setPlaybackError(
-          `Playback failed — this video codec may not be supported by your browser. ` +
-          `Try MP4 export or a different browser.`
-        );
-        onLog?.('error', 'Codec not supported by browser for real-time playback');
-      } else {
-        setPlaybackError(
-          `Playback failed — this video codec may not be supported by your browser. ` +
-          `Try MP4 export or a different browser.`
-        );
-      }
-    }
+    };
+
+    await tryPlay(0);
   }, [onLog]);
 
   const handlePlayPause = useCallback(() => {
