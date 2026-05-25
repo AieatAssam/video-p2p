@@ -582,17 +582,75 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             const otherEffects = effectInputs.filter((e) => e.type !== 'gif');
             const gifCmd = buildGIFCommand({ fps, width, dither });
 
+            // Extract filter/complex filter from chainEffects for non-GIF effects
+            // chainEffects returns: ['-i', 'input', ...filters, ...extraArgs, outputFilename]
+            // We need to merge the GIF palette filter into whatever chainEffects produces,
+            // while keeping the extra args (trim, etc.).
+            const baseArgs = chainEffects('input', otherEffects, '');
+            const fcIdx = baseArgs.indexOf('-filter_complex');
+            const vfIdx = baseArgs.indexOf('-vf');
+
+            // Collect non-filter extra args (trim -ss/-to, etc.) from the raw chainEffects output.
+            // These are everything that isn't '-i input', a filter flag+value, or the trailing ''.
+            const extraArgs: string[] = [];
+            let i = 2; // skip ['-i', 'input']
+            while (i < baseArgs.length - 1) {
+              if (baseArgs[i] === '-filter_complex' || baseArgs[i] === '-vf' || baseArgs[i] === '-af') {
+                i += 2; // skip flag + value
+              } else {
+                extraArgs.push(baseArgs[i]);
+                i++;
+              }
+            }
+
+            // Helper: build the final args for each pass
+            const buildPass1Args = (): string[] => {
+              const args: string[] = ['-i', 'input'];
+              args.push(...extraArgs);
+
+              if (fcIdx >= 0) {
+                // There's an existing filter_complex — append palettegen to it
+                const existingFilter = baseArgs[fcIdx + 1];
+                args.push('-filter_complex', `${existingFilter},${gifCmd.pass1Filter}`);
+              } else if (vfIdx >= 0) {
+                // There's an existing -vf — must use -filter_complex to combine with palettegen
+                const existingFilter = baseArgs[vfIdx + 1];
+                args.push('-filter_complex', `${existingFilter},${gifCmd.pass1Filter}`);
+              } else {
+                // No video filters at all — just palettegen
+                args.push('-vf', gifCmd.pass1Filter);
+              }
+
+              args.push('palette.png');
+              return args;
+            };
+
+            const buildPass2Args = (): string[] => {
+              const args: string[] = ['-i', 'input'];
+              args.push(...extraArgs);
+
+              if (fcIdx >= 0) {
+                const existingFilter = baseArgs[fcIdx + 1];
+                args.push('-filter_complex', `${existingFilter}[v];${gifCmd.pass2Filter}`);
+              } else if (vfIdx >= 0) {
+                const existingFilter = baseArgs[vfIdx + 1];
+                args.push('-filter_complex', `${existingFilter}[v];${gifCmd.pass2Filter}`);
+              } else {
+                args.push('-filter_complex', gifCmd.pass2Filter);
+              }
+
+              args.push('-i', 'palette.png');
+              args.push('output.gif');
+              return args;
+            };
+
             // Pass 1: generate palette.png in VFS
-            const pass1Args = chainEffects('input', otherEffects, 'palette.png');
-            pass1Args.pop(); // remove chainEffects' default output, use gifCmd's palette output instead
-            pass1Args.push(...gifCmd.pass1);
+            const pass1Args = buildPass1Args();
             addLog('info', `GIF pass 1: palettegen`);
             await engine.execCommand(pass1Args, onExportProgress);
 
             // Pass 2: use palette.png to encode output.gif
-            const pass2Args = chainEffects('input', otherEffects, 'output.gif');
-            pass2Args.pop(); // remove chainEffects' output, we supply our own below
-            pass2Args.push(...gifCmd.pass2, 'output.gif');
+            const pass2Args = buildPass2Args();
             addLog('info', `GIF pass 2: paletteuse`);
             await engine.execCommand(pass2Args, onExportProgress);
 

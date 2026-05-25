@@ -164,43 +164,28 @@ describe('Effects Pipeline', () => {
   });
 
   describe('buildGIFCommand', () => {
-    it('generates palettegen in pass1', () => {
+    it('generates palettegen filter', () => {
       const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      const pass1 = result.pass1.join(' ');
-      expect(pass1).toContain('palettegen');
-      expect(pass1).toContain('palette.png');
-      expect(pass1).toContain('fps=10');
-      expect(pass1).toContain('scale=480:-1');
+      expect(result.pass1Filter).toContain('palettegen');
+      expect(result.pass1Filter).toContain('fps=10');
+      expect(result.pass1Filter).toContain('scale=480:-1');
     });
 
-    it('generates paletteuse in pass2', () => {
+    it('generates paletteuse filter', () => {
       const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      const pass2 = result.pass2.join(' ');
-      expect(pass2).toContain('paletteuse');
-      expect(pass2).toContain('-i palette.png');
-      expect(pass2).toContain('fps=10');
-      expect(pass2).toContain('scale=480:-1');
+      expect(result.pass2Filter).toContain('paletteuse');
+      expect(result.pass2Filter).toContain('fps=10');
+      expect(result.pass2Filter).toContain('scale=480:-1');
     });
 
     it('includes dither in pass2 when enabled', () => {
       const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      expect(result.pass2.join(' ')).toContain('bayer');
+      expect(result.pass2Filter).toContain('bayer');
     });
 
     it('omits dither in pass2 when disabled', () => {
       const result = buildGIFCommand({ fps: 10, width: 480, dither: false });
-      expect(result.pass2.join(' ')).not.toContain('bayer');
-    });
-
-    it('pass1 includes -vf flag', () => {
-      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      expect(result.pass1[0]).toBe('-vf');
-    });
-
-    it('pass2 starts with palette.png input', () => {
-      const result = buildGIFCommand({ fps: 10, width: 480, dither: true });
-      expect(result.pass2[0]).toBe('-i');
-      expect(result.pass2[1]).toBe('palette.png');
+      expect(result.pass2Filter).not.toContain('bayer');
     });
   });
 

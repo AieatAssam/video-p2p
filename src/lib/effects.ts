@@ -159,23 +159,23 @@ export function buildChromaKeyCommand(params: { color: string; similarity: numbe
  * so a single combined command would fail: '-i palette.png' can't exist yet.
  */
 export function buildGIFCommand(params: { fps: number; width: number; dither: boolean }): {
-  /** Args for pass 1 (palettegen): to be appended after base effects + '-i input'.
-   *  Produces palette.png in the VFS. */
-  pass1: string[];
-  /** Args for pass 2 (paletteuse): to be appended after base effects + '-i input'.
-   *  Reads palette.png from VFS via '-i palette.png'. Output filename goes at the end. */
-  pass2: string[];
+  /** Filter string for pass 1 (palettegen): to be appended to the video filter chain.
+   *  e.g. 'fps=10,scale=480:-1:flags=lanczos,palettegen' */
+  pass1Filter: string;
+  /** Filter string for pass 2 (paletteuse): uses stream labels [v] and [1:v].
+   *  Requires -filter_complex with -i palette.png as the second input. */
+  pass2Filter: string;
 } {
   const { fps, width, dither } = params;
   const baseFilter = `fps=${fps},scale=${width}:-1:flags=lanczos`;
   const paletteGen = `${baseFilter},palettegen`;
   const paletteUse = dither
-    ? `${baseFilter}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5`
-    : `${baseFilter}[x];[x][1:v]paletteuse`;
+    ? `${baseFilter}[v];[v][1:v]paletteuse=dither=bayer:bayer_scale=5`
+    : `${baseFilter}[v];[v][1:v]paletteuse`;
 
   return {
-    pass1: ['-vf', paletteGen, 'palette.png'],
-    pass2: ['-i', 'palette.png', '-filter_complex', paletteUse],
+    pass1Filter: paletteGen,
+    pass2Filter: paletteUse,
   };
 }
 
