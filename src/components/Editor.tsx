@@ -811,7 +811,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         </div>
 
         {/* Right panel: Drop zone or Effects — full width on mobile, 320px on desktop */}
-        <div className="w-full md:w-80 shrink-0 overflow-y-auto">
+        <div className="w-full md:w-80 shrink-0 overflow-y-auto max-h-[50vh] md:max-h-none">
           {file ? (
             <EffectsPanel
               effects={effects}

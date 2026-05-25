@@ -31,14 +31,9 @@ export function Preview({
   // Sync external currentTime to video element when scrubbing the timeline.
   // External seeks always override regardless of isSeeking — otherwise fast drags
   // during an in-progress seek are swallowed, making the playhead seem unresponsive.
-  // BUT: don't seek while the video is playing — setting currentTime during a pending
-  // play() aborts it with AbortError. The seek will take effect on the next pause.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || currentTime === undefined) return;
-    // Skip syncing if the video is currently playing or has a pending play() —
-    // otherwise the seek would abort the play promise with an AbortError.
-    if (!video.paused) return;
     const diff = Math.abs(video.currentTime - currentTime);
     if (diff > 0.1) {
       onLog?.('debug', `🎯 Syncing video.currentTime: ${video.currentTime.toFixed(2)} → ${currentTime.toFixed(2)} (diff=${diff.toFixed(2)})`);
