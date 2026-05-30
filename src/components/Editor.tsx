@@ -545,7 +545,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   const handleExport = useCallback(
     async (format: 'mp4' | 'gif' | 'audio') => {
       const engine = ffmpegRef.current;
-      if (!engine || !file || !videoInfo) return;
+      if (!file || !videoInfo) return;
 
       try {
         setIsProcessing(true);
@@ -620,6 +620,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         }
 
         // ── ffmpeg / hybrid pipeline (existing code) ──
+        if (!engine) {
+          addLog('error', 'FFmpeg engine not loaded — cannot use ffmpeg/hybrid pipeline');
+          setIsProcessing(false);
+          setProcessingStatus('');
+          return;
+        }
         // Unload the preview video before starting memory-intensive ffmpeg
         // processing to prevent blob URL data source errors under WASM memory pressure.
         if (savedPreviewUrl) setPreviewUrl('');
