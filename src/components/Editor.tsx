@@ -78,6 +78,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   const ffmpegRef = useRef<FFmpegEngine | null>(null);
   const fileDataRef = useRef<File | null>(null);
   const ffmpegLoadedRef = useRef(false);
+  const probeStartedRef = useRef(false);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -94,8 +95,11 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
    * cause of SharedArrayBuffer failure.
    */
   const initFfmpeg = useCallback(async (engine: FFmpegEngine) => {
-    // Probe hardware acceleration and cache results for pipeline selection
-    runAccelerationProbe(addLog).catch(() => {});
+    // Probe hardware acceleration once (avoid duplicate from StrictMode dev)
+    if (!probeStartedRef.current) {
+      probeStartedRef.current = true;
+      runAccelerationProbe(addLog).catch(() => {});
+    }
 
     // Route ffmpeg's internal logs (stderr, debug info) to the debug panel
     engine.setLogCallback((message) => {
@@ -582,6 +586,9 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         addLog('info', `🚀 Pipeline: ${decision.pipeline} — ${decision.reason}`);
         if (decision.forcedBy.length > 0) {
           addLog('debug', `  Forced by effects: ${decision.forcedBy.join(', ')}`);
+        }
+        if (decision.audioHandling === 'dropped' && videoInfo?.hasAudio) {
+          addLog('warn', '🔇 Audio will be dropped — WebCodecs pipeline captures canvas only');
         }
 
         // ── WebCodecs pipeline (fast, GPU-accelerated) ──

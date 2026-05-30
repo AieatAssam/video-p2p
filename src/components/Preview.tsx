@@ -171,7 +171,7 @@ export function Preview({
       {/* Video element — muted helps autoplay policies */}
       <video
         ref={videoRef}
-        src={src}
+        src={src || undefined}
         className="h-full w-full object-contain"
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}

@@ -3,3 +3,5 @@ dist/
 .vite/
 *.local
 .DS_Store
+test-files/
+public/test-video.mp4

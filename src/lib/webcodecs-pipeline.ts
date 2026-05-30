@@ -69,7 +69,11 @@ export async function exportWithMediaRecorder(
     };
     video.onerror = () => {
       clearTimeout(timeout);
-      reject(new Error('Video failed to load'));
+      const mediaError = video.error;
+      const detail = mediaError
+        ? `[${['', 'ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED'][mediaError.code] || mediaError.code}]${mediaError.message ? ': ' + mediaError.message : ''}`
+        : '(no error details)';
+      reject(new Error(`Video failed to load ${detail}`));
     };
     // Check if already loaded
     if (video.readyState >= 2) {

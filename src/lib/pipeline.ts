@@ -330,10 +330,12 @@ export function selectPipeline(
 
     // Even without HW, WebCodecs may still be faster than ffmpeg.wasm for simple effects
     // because Canvas2D operations are GPU-composited
-    const codecName = fileCodecProbe[0]?.codec ?? 'unknown';
+    const codecName = fileCodecProbe[0]?.codec
+      ?? (probe?.codecs['H.264']?.supported ? 'H.264' : probe?.codecs['HEVC']?.supported ? 'HEVC' : 'browser-native');
+    const hwLabel = fileCodecProbe.some(p => p.hw) ? ' (HW)' : '';
     return {
       pipeline: 'webcodecs',
-      reason: `All effects compatible with Canvas2D — using MediaRecorder (${codecName} decode)`,
+      reason: `All effects compatible with Canvas2D — using MediaRecorder (${codecName} decode${hwLabel})`,
       usedEffects,
       skippedEffects,
       audioHandling: videoHasAudio ? 'preserved' : 'dropped',
