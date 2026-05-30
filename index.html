@@ -8,22 +8,28 @@
     <script>
     // Cross-Origin Isolation Service Worker
     // Injects COOP/COEP headers at browser level for SharedArrayBuffer.
-    // On first visit: register SW, reload once to activate it.
+    // On GitHub Pages the CDN strips these headers, so a Service Worker
+    // re-adds them after the CDN delivers the response.
+    //
+    // First visit: register SW -> if still not isolated, reload to activate.
+    // Subsequent visits: SW controls the page, isolation is immediate.
     (function() {
-      if ('serviceWorker' in navigator && !sessionStorage.getItem('coi-done')) {
-        sessionStorage.setItem('coi-done', '1');
-        navigator.serviceWorker.register('/video-p2p/coi-serviceworker.js')
-          .then(function(reg) {
-            if (reg.active && !navigator.serviceWorker.controller) {
-              window.location.reload();
-            }
-          })
-          .catch(function() {
-            // SW registration failed — clear flag, React will detect
-            // missing cross-origin isolation and show an error message
-            sessionStorage.removeItem('coi-done');
-          });
-      }
+      // Already isolated — nothing to do
+      if (crossOriginIsolated) return;
+      if (!('serviceWorker' in navigator)) return;
+
+      var script = '/video-p2p/coi-serviceworker.js';
+      navigator.serviceWorker.register(script).then(function() {
+        // Registration succeeded but we may not be isolated yet — the SW
+        // hasn't claimed this page. Reload so the SW intercepts the next
+        // request and injects COOP/COEP headers.
+        if (!crossOriginIsolated) {
+          window.location.reload();
+        }
+      }).catch(function() {
+        // SW registration failed — React will detect missing cross-origin
+        // isolation and show an appropriate error message.
+      });
     })();
     </script>
   </head>

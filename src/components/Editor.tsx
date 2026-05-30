@@ -12,6 +12,14 @@ import { chainEffects, buildGIFCommand, type EffectInput } from '@/lib/effects';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { LogViewer } from '@/components/LogViewer';
 import type { VideoInfo, Effect, EffectType, MediaFile, LogEntry } from '@/types';
+import {
+  runAccelerationProbe,
+  probeFileAcceleration,
+  selectPipeline,
+  type AccelerationProbe,
+  type PipelineDecision,
+} from '@/lib/pipeline';
+import { exportWithMediaRecorder } from '@/lib/webcodecs-pipeline';
 
 let effectIdCounter = 0;
 function genEffectId(): string {
@@ -39,6 +47,8 @@ function toPipelineType(uiType: EffectType): string {
   return EFFECT_TYPE_MAP[uiType] ?? uiType;
 }
 
+type FileCodecProbe = { codec: string; hw: boolean }[];
+
 export function Editor({ initialFile }: { initialFile?: File | null }) {
   const [file, setFile] = useState<File | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
@@ -57,6 +67,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   const [trimEnd, setTrimEnd] = useState(0);
   const [processingProgress, setProcessingProgress] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [fileCodecProbe, setFileCodecProbe] = useState<FileCodecProbe>([]);
 
   const addLog = useCallback((level: LogEntry['level'], message: string) => {
     setLogs((prev) => [...prev, { timestamp: Date.now(), level, message }]);
@@ -83,31 +94,39 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
    * cause of SharedArrayBuffer failure.
    */
   const initFfmpeg = useCallback(async (engine: FFmpegEngine) => {
+    // Probe hardware acceleration and cache results for pipeline selection
+    runAccelerationProbe(addLog).catch(() => {});
+
     // Route ffmpeg's internal logs (stderr, debug info) to the debug panel
     engine.setLogCallback((message) => {
       addLog('ffmpeg', message);
     });
 
-    // Detect first-load SW setup: if the coi-serviceworker just registered
-    // and the page is about to reload (coi-done flag set but isolation not
-    // yet active), show a clean message instead of a cryptic error.
-    if (sessionStorage.getItem('coi-done') === '1' && !crossOriginIsolated) {
-      addLog('info', 'Cross-origin isolation not yet active — waiting for service worker setup reload.');
-      setLoadError(
-        'Setting up browser features for video processing… ' +
-        'The page will reload automatically. This only happens on the first visit.'
-      );
-      // If the SW reload doesn't happen within 3s, clear the flag and let
-      // the normal error flow take over (SW registration probably failed).
-      setTimeout(() => {
-        sessionStorage.removeItem('coi-done');
-        if (!crossOriginIsolated) {
+    // Check cross-origin isolation (needed for SharedArrayBuffer / core-mt).
+    // If not isolated, the SW may have been registered but hasn't claimed
+    // this page yet — show a clear message and prompt reload.
+    if (!crossOriginIsolated) {
+      addLog('warn', 'Cross-origin isolation not active — SharedArrayBuffer unavailable');
+
+      // Check if a service worker exists; if so, the page likely needs a reload
+      try {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        if (reg) {
           setLoadError(
-            'This browser does not support the video processing features required. ' +
-            'Please use Chrome, Firefox, or Edge.'
+            'Setting up browser features for video processing… ' +
+            'Please reload the page to activate cross-origin isolation. ' +
+            'This only happens on the first visit.'
           );
+          return;
         }
-      }, 3000);
+      } catch {
+        // getRegistration might throw; fall through to general error
+      }
+
+      setLoadError(
+        'This browser does not support the video processing features required. ' +
+        'Please use Chrome, Firefox, or Edge.'
+      );
       return;
     }
 
@@ -287,6 +306,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       try { await engine.deleteFile('input'); } catch { /* ignore */ }
 
       addLog('info', `Video loaded: ${selectedFile.name} (${(selectedFile.size / 1024 / 1024).toFixed(1)} MB, ${videoDuration.toFixed(1)}s)`);
+
+      // Probe acceleration for this specific file — stores result for pipeline selector
+      probeFileAcceleration(selectedFile, addLog).then((results) => {
+        setFileCodecProbe(results);
+      });
+
       setProcessingStatus('');
       setIsProcessing(false);
     } catch (err) {
@@ -524,16 +549,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 
       try {
         setIsProcessing(true);
+        setProcessingProgress(0);
         const statusMsg = `Exporting as ${format.toUpperCase()}...`;
         setProcessingStatus(statusMsg);
-
-        // Write input file to ffmpeg's virtual filesystem on-demand.
-        // We don't pre-load the entire file into memory — instead we read
-        // from the File object right when ffmpeg needs it.
-        if (fileDataRef.current) {
-          const data = await engine.loadFile(fileDataRef.current);
-          await engine.writeFile('input', data);
-        }
+        // Capture preview URL before any pipeline runs — needed by the
+        // finally block to restore after ffmpeg unloads it.
+        const savedPreviewUrl = previewUrl;
 
         // Build effect chain from enabled effects, mapping UI types to pipeline types
         const activeEffects = effects.filter((e) => e.enabled);
@@ -548,6 +569,66 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             type: 'trim',
             params: { start: trimStart, end: trimEnd },
           });
+        }
+
+        // ── Pipeline selection ──
+        const decision = selectPipeline(
+          effectInputs,
+          format,
+          videoInfo?.hasAudio ?? false,
+          null, // probe cache (future: pass runAccelerationProbe result)
+          fileCodecProbe
+        );
+        addLog('info', `🚀 Pipeline: ${decision.pipeline} — ${decision.reason}`);
+        if (decision.forcedBy.length > 0) {
+          addLog('debug', `  Forced by effects: ${decision.forcedBy.join(', ')}`);
+        }
+
+        // ── WebCodecs pipeline (fast, GPU-accelerated) ──
+        if (decision.pipeline === 'webcodecs') {
+          if (!previewUrl) {
+            addLog('error', 'No preview URL — cannot export with WebCodecs');
+            return;
+          }
+          addLog('info', 'Starting WebCodecs export (Canvas2D + MediaRecorder)...');
+          const blob = await exportWithMediaRecorder({
+            videoUrl: previewUrl,
+            effects: effectInputs,
+            trimStart,
+            trimEnd,
+            addLog,
+            onProgress: (e) => {
+              setProcessingProgress(e.percent);
+              setProcessingStatus(`${statusMsg} (${e.percent.toFixed(0)}%)`);
+            },
+          });
+          // Trigger download
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `export.${format === 'mp4' ? 'mp4' : 'webm'}`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          setProcessingStatus('Export complete!');
+          setTimeout(() => {
+            setProcessingStatus('');
+            setIsProcessing(false);
+          }, 2000);
+          return;
+        }
+
+        // ── ffmpeg / hybrid pipeline (existing code) ──
+        // Unload the preview video before starting memory-intensive ffmpeg
+        // processing to prevent blob URL data source errors under WASM memory pressure.
+        if (savedPreviewUrl) setPreviewUrl('');
+        addLog('info', 'Unloaded preview to free media pipeline during export');
+
+        // Write input file to ffmpeg's virtual filesystem on-demand.
+        if (fileDataRef.current) {
+          const data = await engine.loadFile(fileDataRef.current);
+          await engine.writeFile('input', data);
         }
 
         // Shared progress callback for ffmpeg operations
@@ -721,9 +802,15 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         setLoadError(message);
         setIsProcessing(false);
         setProcessingStatus('');
+      } finally {
+        // Restore the preview video that was unloaded before export.
+        if (savedPreviewUrl && !previewUrl) {
+          setPreviewUrl(savedPreviewUrl);
+          addLog('info', 'Restored preview after export');
+        }
       }
     },
-    [file, videoInfo, effects, trimStart, trimEnd, duration, addLog]
+    [file, videoInfo, effects, trimStart, trimEnd, duration, addLog, previewUrl]
   );
 
   // Share handler
@@ -834,25 +921,23 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         </div>
       </div>
 
-      {/* Processing status bar — non-blocking, doesn't cover the UI or debug log */}
+      {/* Processing status bar — non-blocking progress display */}
       {isProcessing && processingStatus && (
         <div className="flex-shrink-0 border-t border-border bg-card/80 px-4 py-2 backdrop-blur-sm">
           <div className="flex items-center gap-3">
             <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
             <span className="text-xs font-medium text-foreground/80">{processingStatus}</span>
-            {processingProgress > 0 && (
-              <span className="text-[10px] text-muted-foreground/60 shrink-0">
-                {processingProgress}%
-              </span>
-            )}
-            {processingProgress > 0 && (
-              <div className="h-1.5 flex-1 min-w-[60px] max-w-[200px] rounded-full bg-muted overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-primary transition-all duration-300"
-                  style={{ width: `${Math.min(processingProgress, 100)}%` }}
-                />
-              </div>
-            )}
+            <span className="text-[10px] text-muted-foreground/60 shrink-0">
+              {processingProgress > 0 ? `${processingProgress}%` : 'starting...'}
+            </span>
+            <div className="h-1.5 flex-1 min-w-[60px] max-w-[200px] rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300"
+                style={{
+                  width: `${processingProgress > 0 ? Math.min(processingProgress, 100) : 3}%`,
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
