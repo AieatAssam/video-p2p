@@ -10,22 +10,33 @@
     // Injects COOP/COEP headers at browser level for SharedArrayBuffer.
     // On GitHub Pages the CDN strips these headers, so a Service Worker
     // re-adds them after the CDN delivers the response.
-    //
-    // First visit: register SW -> if still not isolated, reload to activate.
-    // Subsequent visits: SW controls the page, isolation is immediate.
     (function() {
       // Already isolated — nothing to do
       if (crossOriginIsolated) return;
       if (!('serviceWorker' in navigator)) return;
 
+      // Guard: only reload once per tab session. Prevents infinite loops
+      // when SW takes multiple page loads to fully claim the client.
+      if (sessionStorage.getItem('coi-reloaded')) return;
+      sessionStorage.setItem('coi-reloaded', '1');
+
       var script = '/video-p2p/coi-serviceworker.js';
-      navigator.serviceWorker.register(script).then(function() {
-        // Registration succeeded but we may not be isolated yet — the SW
-        // hasn't claimed this page. Reload so the SW intercepts the next
-        // request and injects COOP/COEP headers.
+      navigator.serviceWorker.register(script).then(function(reg) {
+        // Wait for the SW to be active and controlling this page.
+        // register() resolves as soon as the SW is installed, but it
+        // hasn't claimed this page yet — so crossOriginIsolated is still
+        // false. navigator.serviceWorker.ready waits for an active SW
+        // that controls this client.
+        return navigator.serviceWorker.ready;
+      }).then(function() {
+        // Service worker is now active and controlling. If we're still
+        // not isolated, the SW didn't inject headers — show error.
         if (!crossOriginIsolated) {
-          window.location.reload();
+          console.warn('SW active but crossOriginIsolation still false');
+          return;
         }
+        // Reload so the page is served through the SW with COOP/COEP headers
+        window.location.reload();
       }).catch(function() {
         // SW registration failed — React will detect missing cross-origin
         // isolation and show an appropriate error message.
