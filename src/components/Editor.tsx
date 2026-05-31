@@ -105,6 +105,10 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
     engine.setLogCallback((message) => {
       addLog('ffmpeg', message);
     });
+    // Route engine diagnostic logs (load steps, timing, errors) to the debug panel
+    engine.setDiagLogger((level, message) => {
+      addLog(level, message);
+    });
 
     // Check cross-origin isolation (needed for SharedArrayBuffer / core-mt).
     // If not isolated, the SW may have been registered but hasn't claimed

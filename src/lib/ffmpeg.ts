@@ -1,6 +1,10 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL, fetchFile } from '@ffmpeg/util';
 import type { ProgressEvent } from '../types';
+import type { LogEntry } from '../types';
+
+/** Internal callback for diagnostic logging from the engine itself. */
+type EngineLogger = (level: LogEntry['level'], message: string) => void;
 
 /**
  * CDN base URL for ffmpeg.wasm core files.
@@ -31,6 +35,7 @@ export class FFmpegEngine {
   private lastError: string | null = null;
   private progressCallback: ((event: ProgressEvent) => void) | null = null;
   private logCallback: ((message: string) => void) | null = null;
+  private diagLog: EngineLogger | null = null;
 
   constructor() {
     this.ffmpeg = new FFmpeg();
@@ -41,6 +46,11 @@ export class FFmpegEngine {
   /** Sets a callback for ffmpeg log/stderr output. */
   setLogCallback(cb: ((message: string) => void) | null): void {
     this.logCallback = cb;
+  }
+
+  /** Sets a diagnostic logger for tracking the load process. */
+  setDiagLogger(logger: EngineLogger | null): void {
+    this.diagLog = logger;
   }
 
   /** Registers the ffmpeg log/stderr listener. */
@@ -77,29 +87,59 @@ export class FFmpegEngine {
   }
 
   /**
-   * Downloads and initializes ffmpeg.wasm from the CDN.
+   * Loads ffmpeg.wasm from CDN via toBlobURL().
    * Idempotent — safe to call multiple times.
    * Throws if the core files cannot be fetched or the WASM runtime fails.
+   * Logs each step through the diag logger for debugging load failures.
    */
   async load(): Promise<void> {
     if (this.loaded) return;
+    const log = this.diagLog ?? (() => {});
+    const t0 = performance.now();
+
+    log('info', `🔌 FFmpeg load: CDN=${BASE_URL}`);
 
     try {
+      // Step 1: fetch ffmpeg-core.js (JS glue)
+      log('info', `⬇️ Fetching ffmpeg-core.js...`);
+      const t1 = performance.now();
       const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
-      const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
-      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
+      log('info', `⬇️ ffmpeg-core.js fetched in ${(performance.now() - t1).toFixed(0)}ms`);
 
-      // Timeout: ffmpeg.wasm load can hang on slow connections or
-      // when the WASM runtime hits SharedArrayBuffer limits.
-      // 30 seconds is generous for a 31 MB download + WASM init.
+      // Step 2: fetch ffmpeg-core.wasm (~31 MB — the slow one)
+      log('info', `⬇️ Fetching ffmpeg-core.wasm (~31 MB)...`);
+      const t2 = performance.now();
+      const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
+      log('info', `⬇️ ffmpeg-core.wasm fetched in ${(performance.now() - t2).toFixed(0)}ms`);
+
+      // Step 3: fetch ffmpeg-core.worker.js
+      log('info', `⬇️ Fetching ffmpeg-core.worker.js...`);
+      const t3 = performance.now();
+      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
+      log('info', `⬇️ ffmpeg-core.worker.js fetched in ${(performance.now() - t3).toFixed(0)}ms`);
+
+      // Step 4: initialize WASM runtime (compile + instantiate)
+      log('info', `⚙️ Initializing ffmpeg WASM runtime...`);
+      const t4 = performance.now();
+
+      // 60s timeout: WASM download took 31s for the 31 MB file on first visit,
+      // plus compilation time. 60s gives room for slow connections.
+      const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : true;
+      const cores = navigator.hardwareConcurrency ?? 'unknown';
+      const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
         this.ffmpeg.load({ coreURL, wasmURL, workerURL }),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('ffmpeg.wasm load timed out after 30s')), 30_000)
+          setTimeout(() => reject(new Error(
+            `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
+            `CDN: ${BASE_URL}, isolated: ${isolated}, ` +
+            `cores: ${cores}`
+          )), LOAD_TIMEOUT_MS)
         ),
       ]);
       this.loaded = true;
       this.lastError = null;
+      log('info', `✅ ffmpeg WASM initialized in ${(performance.now() - t0).toFixed(0)}ms total`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error loading ffmpeg';
       this.lastError = message;
