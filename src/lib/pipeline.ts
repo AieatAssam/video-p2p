@@ -324,7 +324,7 @@ export function selectPipeline(
         reason: 'All effects compatible with Canvas2D + MediaRecorder — GPU decode/encode',
         usedEffects,
         skippedEffects,
-        audioHandling: videoHasAudio ? 'preserved' : 'dropped',
+        audioHandling: videoHasAudio ? 'dropped' : 'dropped',
         forcedBy: [],
       };
     }
@@ -339,7 +339,7 @@ export function selectPipeline(
       reason: `All effects compatible with Canvas2D — using MediaRecorder (${codecName} decode${hwLabel})`,
       usedEffects,
       skippedEffects,
-      audioHandling: videoHasAudio ? 'preserved' : 'dropped',
+      audioHandling: 'dropped',
       forcedBy: [],
     };
   }

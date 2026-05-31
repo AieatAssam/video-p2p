@@ -481,7 +481,16 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
       }
       case 'frameExtract': {
         const args = buildFrameExtractCommand(effect.params as any);
-        extraArgs.push(...args);
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
+        // Non-filter args (-vsync, -frame_pts, codec) stay as extraArgs
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] !== '-vf' && args[i] !== '-af' && args[i] !== '-filter_complex') {
+            // Skip filter value
+            if (i > 0 && (args[i - 1] === '-vf' || args[i - 1] === '-af' || args[i - 1] === '-filter_complex')) continue;
+            extraArgs.push(args[i]);
+          }
+        }
         break;
       }
     }

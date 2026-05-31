@@ -16,6 +16,9 @@ import {
   buildStabilizeCommand,
   buildAudioExtractCommand,
   buildAudioReplaceCommand,
+  buildFilterCommand,
+  buildFrameExtractCommand,
+  buildConcatCommand,
   chainEffects,
   type EffectInput,
 } from '../../src/lib/effects';
@@ -160,6 +163,114 @@ describe('Effects Pipeline', () => {
     it('generates colorkey filter', () => {
       const args = buildChromaKeyCommand({ color: '#00ff00', similarity: 0.1, blend: 0.05 });
       expect(args.join(' ')).toContain('colorkey=#00ff00:0.1:0.1');
+    });
+  });
+
+  describe('buildFilterCommand', () => {
+    it('generates grayscale colorchannelmixer', () => {
+      const args = buildFilterCommand('grayscale');
+      expect(args.join(' ')).toContain('colorchannelmixer');
+      expect(args.join(' ')).not.toContain('eq=');
+    });
+
+    it('generates sepia colorchannelmixer', () => {
+      const args = buildFilterCommand('sepia');
+      expect(args.join(' ')).toContain('colorchannelmixer');
+    });
+
+    it('generates negate for invert', () => {
+      const args = buildFilterCommand('invert');
+      expect(args.join(' ')).toContain('negate');
+    });
+
+    it('generates vintage with warm matrix + eq', () => {
+      const args = buildFilterCommand('vintage');
+      expect(args.join(' ')).toContain('colorchannelmixer');
+      expect(args.join(' ')).toContain('eq=');
+    });
+
+    it('generates vignette filter', () => {
+      const args = buildFilterCommand('vignette');
+      expect(args.join(' ')).toContain('vignette=');
+    });
+
+    it('generates night-vision with green tint', () => {
+      const args = buildFilterCommand('night-vision');
+      expect(args.join(' ')).toContain('colorchannelmixer');
+      expect(args.join(' ')).toContain('brightness=');
+    });
+
+    it('returns empty array for none', () => {
+      expect(buildFilterCommand('none')).toEqual([]);
+    });
+
+    it('returns empty array for empty string', () => {
+      expect(buildFilterCommand('')).toEqual([]);
+    });
+
+    it('throws for unknown preset', () => {
+      expect(() => buildFilterCommand('unknown')).toThrow('Unknown filter preset');
+    });
+  });
+
+  describe('buildFrameExtractCommand', () => {
+    it('generates png output by default', () => {
+      const args = buildFrameExtractCommand({ format: 'png' });
+      expect(args.join(' ')).toContain('-c:v png');
+      expect(args.join(' ')).toContain('-vsync vfr');
+    });
+
+    it('generates mjpeg for jpg format', () => {
+      const args = buildFrameExtractCommand({ format: 'jpg' });
+      expect(args.join(' ')).toContain('-c:v mjpeg');
+    });
+
+    it('includes select filter for everyNth > 1', () => {
+      const args = buildFrameExtractCommand({ everyNth: 10, format: 'png' });
+      expect(args.join(' ')).toContain('select=');
+      expect(args.join(' ')).toContain('mod(n');
+    });
+
+    it('includes scale filter when maxWidth is set', () => {
+      const args = buildFrameExtractCommand({ format: 'png', maxWidth: 640 });
+      expect(args.join(' ')).toContain('scale=');
+      expect(args.join(' ')).toContain('640');
+    });
+  });
+
+  describe('buildConcatCommand', () => {
+    it('generates concat input with file list', () => {
+      const args = buildConcatCommand({ files: ['a.mp4', 'b.mp4'] });
+      expect(args.join(' ')).toContain('concat:a.mp4|b.mp4');
+      expect(args.join(' ')).toContain('-c copy');
+    });
+
+    it('includes fade filter when transition specified', () => {
+      const args = buildConcatCommand({ files: ['a.mp4'], transition: { type: 'fade', duration: 1 } });
+      expect(args.join(' ')).toContain('fade');
+    });
+  });
+
+  describe('buildGlitchCommand', () => {
+    it('generates noise and saturation by default', () => {
+      const args = buildGlitchCommand({ intensity: 5 });
+      const cmd = args.join(' ');
+      expect(cmd).toContain('noise=');
+      expect(cmd).toContain('eq=');
+    });
+
+    it('includes scanlines when enabled', () => {
+      const args = buildGlitchCommand({ intensity: 5, scanlines: true });
+      const cmd = args.join(' ');
+      expect(cmd).toContain('noise=');
+      expect(cmd).toContain('drawbox=');
+    });
+
+    it('does not include drawbox when scanlines disabled', () => {
+      const args = buildGlitchCommand({ intensity: 5, scanlines: false });
+      const cmd = args.join(' ');
+      expect(cmd).toContain('noise=');
+      expect(cmd).not.toContain('drawbox=');
     });
   });
 
