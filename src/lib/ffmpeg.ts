@@ -8,16 +8,17 @@ type EngineLogger = (level: LogEntry['level'], message: string) => void;
 
 /**
  * CDN base URL for ffmpeg.wasm core files.
- * Uses the multi-thread build (@ffmpeg/core-mt) which has no default
- * WASM memory limit and can handle larger video files. The single-thread
- * build (@ffmpeg/core) is limited to ~256MB and fails on large inputs.
+ * Uses the single-thread build (@ffmpeg/core) which is compatible across
+ * all browsers (Chromium, Firefox, WebKit/Safari). The multi-thread build
+ * (@ffmpeg/core-mt) needs a separate worker script loaded via blob URL
+ * Worker + importScripts, which hangs on WebKit/Safari.
  *
- * The multi-thread build requires:
- * - SharedArrayBuffer (provided by coi-serviceworker.js on GitHub Pages)
- * - Cross-origin isolation (same COOP/COEP headers)
- * - A separate worker script (ffmpeg-core.worker.js)
+ * The single-thread build:
+ * - No workerURL needed — runs WASM on the main thread
+ * - Works with cross-origin isolation (SharedArrayBuffer for file I/O)
+ * - ~256MB WASM memory limit (sufficient for files up to ~100MB)
  */
-const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm';
+const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
 
 /**
  * Wraps the ffmpeg.wasm FFmpeg instance with lifecycle management,
@@ -106,21 +107,15 @@ export class FFmpegEngine {
       const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
       log('info', `⬇️ ffmpeg-core.js fetched in ${(performance.now() - t1).toFixed(0)}ms`);
 
-      // Step 2: fetch ffmpeg-core.wasm (~31 MB — the slow one)
+      // Step 2: fetch ffmpeg-core.wasm (~31 MB)
       log('info', `⬇️ Fetching ffmpeg-core.wasm (~31 MB)...`);
       const t2 = performance.now();
       const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
       log('info', `⬇️ ffmpeg-core.wasm fetched in ${(performance.now() - t2).toFixed(0)}ms`);
 
-      // Step 3: fetch ffmpeg-core.worker.js
-      log('info', `⬇️ Fetching ffmpeg-core.worker.js...`);
+      // Step 3: initialize WASM runtime (compile + instantiate)
+      log('info', `⚙️ Initializing ffmpeg WASM runtime (single-thread)...`);
       const t3 = performance.now();
-      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
-      log('info', `⬇️ ffmpeg-core.worker.js fetched in ${(performance.now() - t3).toFixed(0)}ms`);
-
-      // Step 4: initialize WASM runtime (compile + instantiate)
-      log('info', `⚙️ Initializing ffmpeg WASM runtime...`);
-      const t4 = performance.now();
 
       // 60s timeout: WASM download took 31s for the 31 MB file on first visit,
       // plus compilation time. 60s gives room for slow connections.
@@ -128,7 +123,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ coreURL, wasmURL, workerURL }),
+        this.ffmpeg.load({ coreURL, wasmURL }), // single-thread: no workerURL
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
