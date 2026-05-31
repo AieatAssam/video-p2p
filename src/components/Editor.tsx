@@ -598,8 +598,21 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             return;
           }
           addLog('info', 'Starting WebCodecs export (Canvas2D + MediaRecorder)...');
+          // Create a dedicated blob URL for the export pipeline — some browsers
+          // (especially WebKit) restrict sharing a single blob URL between
+          // multiple <video> elements, so we make a fresh one from the file data.
+          let exportVideoUrl = previewUrl;
+          if (fileDataRef.current) {
+            try {
+              const fileData = await fileDataRef.current.arrayBuffer();
+              const exportBlob = new Blob([fileData], { type: fileDataRef.current.type });
+              exportVideoUrl = URL.createObjectURL(exportBlob);
+            } catch {
+              addLog('warn', 'Could not create dedicated export URL — using preview URL');
+            }
+          }
           const blob = await exportWithMediaRecorder({
-            videoUrl: previewUrl,
+            videoUrl: exportVideoUrl,
             effects: effectInputs,
             trimStart,
             trimEnd,
@@ -609,6 +622,10 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
               setProcessingStatus(`${statusMsg} (${e.percent.toFixed(0)}%)`);
             },
           });
+          // Clean up the dedicated export URL if we created one
+          if (exportVideoUrl !== previewUrl) {
+            URL.revokeObjectURL(exportVideoUrl);
+          }
           // Trigger download
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');

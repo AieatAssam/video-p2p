@@ -112,8 +112,11 @@ export function buildFilterCommand(preset: string): string[] {
       return ['-vf', 'colorchannelmixer=0.393:0.769:0.189:0:0.349:0.686:0.168:0:0.272:0.534:0.131'];
     case 'invert':
       return ['-vf', 'negate'];
+    case 'none':
+    case '':
+      return []; // No-op
     default:
-      throw new Error('Unknown filter preset');
+      throw new Error(`Unknown filter preset: ${preset}`);
   }
 }
 
@@ -127,7 +130,10 @@ export function buildPixelateCommand(params: { blockSize: number }): string[] {
 
 export function buildTextOverlayCommand(params: { text: string; x: number; y: number; fontSize: number; color: string; font?: string }): string[] {
   const parts: string[] = [];
-  parts.push(`text='${params.text}'`);
+  // Escape single quotes for ffmpeg drawtext: replace ' with '\'' (end quote,
+  // escaped quote, resume quote). Also wrap in double quotes to handle spaces.
+  const escapedText = params.text.replace(/'/g, "'\\\\''");
+  parts.push(`text='${escapedText}'`);
   parts.push(`x=${params.x}`);
   parts.push(`y=${params.y}`);
   parts.push(`fontsize=${params.fontSize}`);
@@ -239,17 +245,12 @@ export function buildGlitchCommand(params: { intensity: number; chromatic?: bool
 /**
  * Builds ffmpeg arguments for video stabilization.
  *
- * Uses a two-pass approach:
- * 1. vidstabdetect — analyzes motion and writes transforms.trf
- * 2. vidstabtransform — applies the stabilization using the analysis data
- *
- * Higher smoothness = smoother result but more cropping of edges.
+ * Uses the deshake filter (single-pass) instead of vidstabdetect+vidstabtransform
+ * (two-pass) because chainEffects produces a single ffmpeg command.
+ * Deshake is less sophisticated but compatible with a single filter chain.
  */
 export function buildStabilizeCommand(params: { smoothness: number }): string[] {
-  return [
-    '-i', 'input', '-vf', `vidstabdetect=smoothness=${params.smoothness}`, '-f', 'null', '-',
-    '-i', 'input', '-vf', `vidstabtransform=smoothness=${params.smoothness}`,
-  ];
+  return ['-vf', `deshake=${params.smoothness}`];
 }
 
 export function buildAudioExtractCommand(params: { format: string; bitrate: number }): string[] {
@@ -319,6 +320,7 @@ function extractFilterStrings(args: string[]): ExtractedFilters {
 export function chainEffects(inputFile: string, effects: EffectInput[], outputFile: string): string[] {
   const videoFilters: string[] = [];
   const audioFilters: string[] = [];
+  const complexFilters: string[] = [];
   const extraArgs: string[] = [];
 
   for (const effect of effects) {
@@ -404,8 +406,7 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
       case 'splitScreen': {
         const args = buildSplitScreenCommand(effect.params as any);
         const extracted = extractFilterStrings(args);
-        videoFilters.push(...extracted.video);
-        videoFilters.push(...extracted.complex);
+        complexFilters.push(...extracted.complex);
         break;
       }
       case 'glitch': {
@@ -436,6 +437,9 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
 
   if (videoFilters.length > 0) {
     result.push('-filter_complex', videoFilters.join(','));
+  }
+  for (const cf of complexFilters) {
+    result.push('-filter_complex', cf);
   }
   if (audioFilters.length > 0) {
     result.push('-af', audioFilters.join(','));

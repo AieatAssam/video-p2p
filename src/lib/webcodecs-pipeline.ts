@@ -19,6 +19,13 @@ import type { LogEntry } from '@/types';
 const DEFAULT_FPS = 30;
 const DEFAULT_OUTPUT_BITRATE = 5_000_000; // 5 Mbps
 
+/** Map from filter preset names to CSS filter strings for Canvas2D rendering */
+const FILTER_PRESET_CSS: Record<string, string> = {
+  grayscale: 'grayscale(1)',
+  sepia: 'sepia(1)',
+  invert: 'invert(1)',
+};
+
 export interface WebCodecsExportOptions {
   videoUrl: string;           // blob: URL of the source
   effects: EffectInput[];      // Canvas2D-compatible effects only
@@ -220,11 +227,44 @@ export async function exportWithMediaRecorder(
     // Apply blur
     const blurEffect = effects.find((e) => e.type === 'blur');
     if (blurEffect?.params) {
-      const bp = blurEffect.params as { sigma?: number };
-      const sigma = bp.sigma ?? 5;
-      ctx.filter = `blur(${sigma}px)`;
+      const bp = blurEffect.params as { radius?: number };
+      const radius = bp.radius ?? 5;
+      ctx.filter = `blur(${radius}px)`;
       ctx.drawImage(video, 0, 0, outW, outH);
       ctx.filter = 'none';
+    }
+
+    // Apply filter preset (grayscale, sepia, invert via CSS)
+    const filterEffect = effects.find((e) => e.type === 'filter');
+    if (filterEffect?.params) {
+      const fp = filterEffect.params as { preset?: string };
+      const cssFilter = FILTER_PRESET_CSS[fp.preset ?? ''];
+      if (cssFilter) {
+        ctx.filter = cssFilter;
+        ctx.drawImage(video, 0, 0, outW, outH);
+        ctx.filter = 'none';
+      }
+    }
+
+    // Apply pixelate (blocky effect via canvas scaling trick)
+    const pixelateEffect = effects.find((e) => e.type === 'pixelate');
+    if (pixelateEffect?.params) {
+      const pp = pixelateEffect.params as { blockSize?: number };
+      const blockSize = pp.blockSize ?? 10;
+      if (blockSize > 1) {
+        // Scale DOWN to block resolution, then scale back up with nearest-neighbor
+        const bw = Math.max(1, Math.round(outW / blockSize));
+        const bh = Math.max(1, Math.round(outH / blockSize));
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = bw;
+        tempCanvas.height = bh;
+        const tempCtx = tempCanvas.getContext('2d')!;
+        tempCtx.imageSmoothingEnabled = false;
+        tempCtx.drawImage(video, 0, 0, bw, bh);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tempCanvas, 0, 0, outW, outH);
+        ctx.imageSmoothingEnabled = true;
+      }
     }
 
     // Chroma key (pixel-level — slow, use sparingly)

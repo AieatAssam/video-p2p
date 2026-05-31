@@ -235,7 +235,7 @@ function EffectControl({
         );
       }
       case 'filter': {
-        const preset = (effect.params.preset as string) ?? 'none';
+        const preset = (effect.params.preset as string) ?? 'grayscale';
         return (
           <div>
             <Label>Preset</Label>
@@ -247,7 +247,6 @@ function EffectControl({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">None</SelectItem>
                 <SelectItem value="grayscale">Grayscale</SelectItem>
                 <SelectItem value="sepia">Sepia</SelectItem>
                 <SelectItem value="invert">Invert</SelectItem>
