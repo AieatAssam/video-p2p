@@ -89,7 +89,15 @@ export class FFmpegEngine {
       const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
       const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
 
-      await this.ffmpeg.load({ coreURL, wasmURL, workerURL });
+      // Timeout: ffmpeg.wasm load can hang on slow connections or
+      // when the WASM runtime hits SharedArrayBuffer limits.
+      // 30 seconds is generous for a 31 MB download + WASM init.
+      await Promise.race([
+        this.ffmpeg.load({ coreURL, wasmURL, workerURL }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('ffmpeg.wasm load timed out after 30s')), 30_000)
+        ),
+      ]);
       this.loaded = true;
       this.lastError = null;
     } catch (error) {

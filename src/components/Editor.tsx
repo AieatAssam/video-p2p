@@ -206,9 +206,14 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       setProcessingStatus('Loading FFmpeg...');
       // Wait for ffmpeg to finish loading — the useEffect that starts initFfmpeg
       // runs asynchronously, so the first file selection may arrive before it's ready.
-      await new Promise<void>((resolve) => {
+      // Add a 30s timeout to prevent hanging indefinitely.
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('FFmpeg failed to load within 30 seconds'));
+        }, 30_000);
         const check = () => {
           if (ffmpegLoadedRef.current) {
+            clearTimeout(timeout);
             resolve();
           } else {
             setTimeout(check, 100);

@@ -39,7 +39,7 @@ const levelLabels: Record<string, string> = {
 };
 
 export function LogViewer({ logs, onClear, maxHeight = 300, className }: LogViewerProps) {
-  const [collapsed, setCollapsed] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new logs arrive
