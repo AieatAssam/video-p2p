@@ -38,6 +38,7 @@ const EFFECT_CATEGORIES: Record<string, { label: string; types: { value: EffectT
       { value: 'color-grade', label: 'Color Grade' },
       { value: 'blur', label: 'Blur' },
       { value: 'pixelate', label: 'Pixelate' },
+      { value: 'glitch', label: 'Glitch / VHS' },
     ],
   },
   transform: {
@@ -47,6 +48,8 @@ const EFFECT_CATEGORIES: Record<string, { label: string; types: { value: EffectT
       { value: 'resize', label: 'Resize' },
       { value: 'speed', label: 'Speed' },
       { value: 'reverse', label: 'Reverse' },
+      { value: 'stabilize', label: 'Stabilization' },
+      { value: 'split-screen', label: 'Split Screen' },
     ],
   },
   overlay: {
@@ -56,19 +59,12 @@ const EFFECT_CATEGORIES: Record<string, { label: string; types: { value: EffectT
       { value: 'chroma-key', label: 'Chroma Key' },
     ],
   },
-  audio: {
-    label: 'Audio',
-    types: [
-      { value: 'audio-extract', label: 'Extract Audio' },
-      { value: 'audio-replace', label: 'Replace Audio' },
-    ],
-  },
-  advanced: {
-    label: 'Advanced',
+  export: {
+    label: 'Export',
     types: [
       { value: 'gif-export', label: 'GIF Export' },
-      { value: 'stabilize', label: 'Stabilization' },
-      { value: 'trim', label: 'Trim' },
+      { value: 'audio-extract', label: 'Extract Audio' },
+      { value: 'frame-extract', label: 'Frame Extract' },
     ],
   },
 };
@@ -247,9 +243,13 @@ function EffectControl({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="none">None</SelectItem>
                 <SelectItem value="grayscale">Grayscale</SelectItem>
                 <SelectItem value="sepia">Sepia</SelectItem>
                 <SelectItem value="invert">Invert</SelectItem>
+                <SelectItem value="vintage">Vintage</SelectItem>
+                <SelectItem value="vignette">Vignette</SelectItem>
+                <SelectItem value="night-vision">Night Vision</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -417,6 +417,96 @@ function EffectControl({
           <div>
             <Label>Smoothness: {smoothness}</Label>
             <Slider value={[smoothness]} min={1} max={15} step={1} onValueChange={([v]) => onUpdate({ ...effect.params, smoothness: v })} />
+          </div>
+        );
+      }
+      case 'glitch': {
+        const intensity = (effect.params.intensity as number) ?? 5;
+        const chromatic = (effect.params.chromatic as boolean) ?? true;
+        const scanlines = (effect.params.scanlines as boolean) ?? true;
+        return (
+          <div className="space-y-2">
+            <div>
+              <Label>Intensity: {intensity}</Label>
+              <Slider value={[intensity]} min={1} max={10} step={1} onValueChange={([v]) => onUpdate({ ...effect.params, intensity: v })} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={chromatic} onCheckedChange={(v) => onUpdate({ ...effect.params, chromatic: v })} />
+              <Label>Chromatic Aberration</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={scanlines} onCheckedChange={(v) => onUpdate({ ...effect.params, scanlines: v })} />
+              <Label>Scanlines</Label>
+            </div>
+          </div>
+        );
+      }
+      case 'split-screen': {
+        const layout = (effect.params.layout as string) ?? 'side-by-side';
+        const position = (effect.params.position as string) ?? 'br';
+        return (
+          <div className="space-y-2">
+            <div>
+              <Label>Layout</Label>
+              <Select value={layout} onValueChange={(v) => onUpdate({ ...effect.params, layout: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="side-by-side">Side by Side</SelectItem>
+                  <SelectItem value="pip">Picture-in-Picture</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {layout === 'pip' && (
+              <div>
+                <Label>Position</Label>
+                <Select value={position} onValueChange={(v) => onUpdate({ ...effect.params, position: v })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tl">Top Left</SelectItem>
+                    <SelectItem value="tr">Top Right</SelectItem>
+                    <SelectItem value="bl">Bottom Left</SelectItem>
+                    <SelectItem value="br">Bottom Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+        );
+      }
+      case 'frame-extract': {
+        const format = (effect.params.format as string) ?? 'png';
+        const everyNth = (effect.params.everyNth as number) ?? 1;
+        const maxWidth = (effect.params.maxWidth as number) ?? 0;
+        return (
+          <div className="space-y-2">
+            <div>
+              <Label>Format</Label>
+              <Select value={format} onValueChange={(v) => onUpdate({ ...effect.params, format: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="png">PNG</SelectItem>
+                  <SelectItem value="jpg">JPEG</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Every Nth Frame: {everyNth}</Label>
+              <Slider value={[everyNth]} min={1} max={60} step={1} onValueChange={([v]) => onUpdate({ ...effect.params, everyNth: v })} />
+            </div>
+            <div>
+              <Label>Max Width</Label>
+              <Input
+                type="number"
+                value={maxWidth}
+                onChange={(e) => onUpdate({ ...effect.params, maxWidth: parseInt(e.target.value) || 0 })}
+              />
+            </div>
           </div>
         );
       }

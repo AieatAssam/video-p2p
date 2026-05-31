@@ -16,7 +16,8 @@ export type EffectType =
   | 'glitch'
   | 'stabilize'
   | 'audioExtract'
-  | 'audioReplace';
+  | 'audioReplace'
+  | 'frameExtract';
 
 /** An effect as consumed by the ffmpeg pipeline — type and parameters. */
 export interface EffectInput {
@@ -112,12 +113,45 @@ export function buildFilterCommand(preset: string): string[] {
       return ['-vf', 'colorchannelmixer=0.393:0.769:0.189:0:0.349:0.686:0.168:0:0.272:0.534:0.131'];
     case 'invert':
       return ['-vf', 'negate'];
+    case 'vintage':
+      // Warm/brown tone: boost red/green, reduce blue, add slight contrast
+      return ['-vf', 'colorchannelmixer=0.5:0.4:0.1:0:0.3:0.5:0.2:0:0.1:0.2:0.3,eq=contrast=1.2:saturation=0.6'];
+    case 'vignette':
+      return ['-vf', 'vignette=PI/4:max_eval=frame'];
+    case 'night-vision':
+      // Green monochrome tint + brightness boost
+      return ['-vf', 'colorchannelmixer=0:0:0:0:0.4:0.6:0:0:0:0:0:0,eq=brightness=0.2:contrast=1.5'];
     case 'none':
     case '':
       return []; // No-op
     default:
       throw new Error(`Unknown filter preset: ${preset}`);
   }
+}
+
+/**
+ * Builds ffmpeg arguments for frame extraction.
+ * Extracts still frames at regular intervals or specific timestamps.
+ */
+export function buildFrameExtractCommand(params: { everyNth?: number; format: string; maxWidth?: number }): string[] {
+  const { everyNth = 1, format = 'png', maxWidth } = params;
+  const args: string[] = [];
+  // Frame selection: extract every Nth frame
+  if (everyNth > 1) {
+    args.push('-vf', `select=not(mod(n\\,${everyNth}))`);
+  }
+  // Output format
+  if (maxWidth) {
+    args.push('-vf', `scale=${maxWidth}:-1`);
+  }
+  args.push('-vsync', 'vfr', '-frame_pts', '1');
+  // Use PNG or JPEG codec
+  if (format === 'jpg' || format === 'jpeg') {
+    args.push('-c:v', 'mjpeg', '-q:v', '2');
+  } else {
+    args.push('-c:v', 'png');
+  }
+  return args;
 }
 
 export function buildBlurCommand(params: { radius: number }): string[] {
@@ -239,7 +273,21 @@ export function buildSplitScreenCommand(params: { layout: string; position?: str
 }
 
 export function buildGlitchCommand(params: { intensity: number; chromatic?: boolean; scanlines?: boolean }): string[] {
-  return ['-vf', `freezeframes=duration=${params.intensity}`];
+  const filters: string[] = [];
+  // Noise (static/interference) — higher intensity = more noise
+  const noiseLevel = Math.min(30, Math.round(params.intensity * 3));
+  filters.push(`noise=alls=${noiseLevel}:allf=t+u`);
+  // Saturation boost for VHS feel
+  filters.push(`eq=saturation=${1 + params.intensity * 0.1}`);
+
+  if (params.scanlines) {
+    // Draw alternating horizontal lines for CRT scanline effect
+    filters.push(`drawbox=w=iw:h=1:t=fill:c=black@${(0.08 + params.intensity * 0.02).toFixed(2)}`);
+    // Second darker line offset
+    filters.push(`drawbox=w=iw:h=1:y=2:t=fill:c=black@${(0.04 + params.intensity * 0.01).toFixed(2)}`);
+  }
+
+  return ['-vf', filters.join(',')];
 }
 
 /**
@@ -250,7 +298,7 @@ export function buildGlitchCommand(params: { intensity: number; chromatic?: bool
  * Deshake is less sophisticated but compatible with a single filter chain.
  */
 export function buildStabilizeCommand(params: { smoothness: number }): string[] {
-  return ['-vf', `deshake=${params.smoothness}`];
+  return ['-vf', `deshake=rx=0:ry=0:edge=blank:blocksize=${Math.max(4, Math.round(32 / params.smoothness))}`];
 }
 
 export function buildAudioExtractCommand(params: { format: string; bitrate: number }): string[] {
@@ -417,7 +465,8 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
       }
       case 'stabilize': {
         const args = buildStabilizeCommand(effect.params as any);
-        extraArgs.push(...args);
+        const extracted = extractFilterStrings(args);
+        videoFilters.push(...extracted.video);
         break;
       }
       case 'audioExtract': {
@@ -427,6 +476,11 @@ export function chainEffects(inputFile: string, effects: EffectInput[], outputFi
       }
       case 'audioReplace': {
         const args = buildAudioReplaceCommand(effect.params as any);
+        extraArgs.push(...args);
+        break;
+      }
+      case 'frameExtract': {
+        const args = buildFrameExtractCommand(effect.params as any);
         extraArgs.push(...args);
         break;
       }

@@ -24,6 +24,8 @@ const FILTER_PRESET_CSS: Record<string, string> = {
   grayscale: 'grayscale(1)',
   sepia: 'sepia(1)',
   invert: 'invert(1)',
+  vintage: 'sepia(0.5) contrast(1.2) saturate(0.6)',
+  'night-vision': 'brightness(1.3) contrast(1.5) saturate(4) hue-rotate(60deg)',
 };
 
 export interface WebCodecsExportOptions {
@@ -180,7 +182,7 @@ export async function exportWithMediaRecorder(
       }
     });
 
-    // Draw frame to canvas with effects
+    // ── Draw base frame to canvas ──
     ctx.clearRect(0, 0, outW, outH);
 
     // Crop: draw a sub-region of the source into the full output
@@ -196,7 +198,11 @@ export async function exportWithMediaRecorder(
       ctx.drawImage(video, 0, 0, outW, outH);
     }
 
-    // Apply color grade (basic brightness/contrast/saturation/gamma via CSS filter)
+    // ── Apply effects cumulatively to the CANVAS (not video) ──
+    // Each subsequent effect draws the already-modified canvas onto itself,
+    // preserving all previous effect layers.
+
+    // Apply color grade (basic brightness/contrast/saturation via CSS filter)
     const colorEffect = effects.find((e) => e.type === 'colorGrade');
     if (colorEffect?.params) {
       const cp = colorEffect.params as {
@@ -218,8 +224,8 @@ export async function exportWithMediaRecorder(
       }
       if (filters.length > 0) {
         ctx.filter = filters.join(' ');
-        // Redraw with filter
-        ctx.drawImage(video, 0, 0, outW, outH);
+        // Redraw canvas ONTO ITSELF with filter (preserves prior effects)
+        ctx.drawImage(canvas, 0, 0);
         ctx.filter = 'none';
       }
     }
@@ -230,7 +236,7 @@ export async function exportWithMediaRecorder(
       const bp = blurEffect.params as { radius?: number };
       const radius = bp.radius ?? 5;
       ctx.filter = `blur(${radius}px)`;
-      ctx.drawImage(video, 0, 0, outW, outH);
+      ctx.drawImage(canvas, 0, 0);
       ctx.filter = 'none';
     }
 
@@ -241,7 +247,7 @@ export async function exportWithMediaRecorder(
       const cssFilter = FILTER_PRESET_CSS[fp.preset ?? ''];
       if (cssFilter) {
         ctx.filter = cssFilter;
-        ctx.drawImage(video, 0, 0, outW, outH);
+        ctx.drawImage(canvas, 0, 0);
         ctx.filter = 'none';
       }
     }
@@ -260,7 +266,8 @@ export async function exportWithMediaRecorder(
         tempCanvas.height = bh;
         const tempCtx = tempCanvas.getContext('2d')!;
         tempCtx.imageSmoothingEnabled = false;
-        tempCtx.drawImage(video, 0, 0, bw, bh);
+        // Draw from canvas (all prior effects preserved)
+        tempCtx.drawImage(canvas, 0, 0, bw, bh);
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(tempCanvas, 0, 0, outW, outH);
         ctx.imageSmoothingEnabled = true;

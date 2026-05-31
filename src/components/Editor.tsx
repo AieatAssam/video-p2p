@@ -475,7 +475,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       case 'reverse':
         break;
       case 'filter':
-        defaultParams.preset = 'none';
+        defaultParams.preset = 'grayscale';
         break;
       case 'color-grade':
         defaultParams.brightness = 0;
@@ -516,6 +516,20 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       case 'stabilize':
         defaultParams.smoothness = 5;
         break;
+      case 'glitch':
+        defaultParams.intensity = 5;
+        defaultParams.chromatic = true;
+        defaultParams.scanlines = true;
+        break;
+      case 'split-screen':
+        defaultParams.layout = 'side-by-side';
+        defaultParams.position = 'br';
+        break;
+      case 'frame-extract':
+        defaultParams.format = 'png';
+        defaultParams.everyNth = 1;
+        defaultParams.maxWidth = 0;
+        break;
       default:
         break;
     }
@@ -551,6 +565,8 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       const engine = ffmpegRef.current;
       if (!file || !videoInfo) return;
 
+      let savedPreviewUrl: string | undefined;
+
       try {
         setIsProcessing(true);
         setProcessingProgress(0);
@@ -558,7 +574,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         setProcessingStatus(statusMsg);
         // Capture preview URL before any pipeline runs — needed by the
         // finally block to restore after ffmpeg unloads it.
-        const savedPreviewUrl = previewUrl;
+        savedPreviewUrl = previewUrl;
 
         // Build effect chain from enabled effects, mapping UI types to pipeline types
         const activeEffects = effects.filter((e) => e.enabled);

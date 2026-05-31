@@ -38,6 +38,7 @@ const FFMPEG_ONLY = new Set<string>([
   'concat',
   'speed',
   'reverse',
+  'frameExtract',
 ]);
 
 // Non-effect flags that affect pipeline choice
