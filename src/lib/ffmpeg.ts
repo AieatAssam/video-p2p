@@ -136,7 +136,7 @@ export class FFmpegEngine {
           log('info', `🧪 DIRECT worker message: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 120)}`);
         };
         testWorker.onerror = (ev) => {
-          log('error', `🧪 DIRECT worker error: ${ev.message}`);
+          log('error', `🧪 DIRECT worker error: message=${ev.message} filename=${ev.filename} lineno=${ev.lineno} colno=${ev.colno} error=${String(ev.error)}`);
         };
         testWorker.postMessage({ type: 'PING', data: 'hello' });
         log('info', `🧪 Direct test worker created and message sent`);
