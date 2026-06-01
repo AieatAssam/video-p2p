@@ -126,10 +126,26 @@ export class FFmpegEngine {
 
       // Use a diagnostic worker that logs each step of the load process
       // from inside the Worker, so we can see where exactly it hangs.
-      const classWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
+      const diagWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
+
+      // Direct test: create a minimal Worker and see if it responds
+      try {
+        log('info', `🧪 Creating direct test Worker (non-diag)...`);
+        const testWorker = new Worker(diagWorkerURL, { type: 'module' });
+        testWorker.onmessage = (ev) => {
+          log('info', `🧪 DIRECT worker message: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 120)}`);
+        };
+        testWorker.onerror = (ev) => {
+          log('error', `🧪 DIRECT worker error: ${ev.message}`);
+        };
+        testWorker.postMessage({ type: 'PING', data: 'hello' });
+        log('info', `🧪 Direct test worker created and message sent`);
+      } catch (err) {
+        log('error', `🧪 Failed to create test Worker: ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
-      log('info', `👷 Diagnostic worker: ${classWorkerURL}`);
+      log('info', `👷 Diagnostic worker: ${diagWorkerURL}`);
       const t3 = performance.now();
 
       // 60s timeout: 31 MB WASM download + multi-thread compilation.
@@ -137,7 +153,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ classWorkerURL, coreURL, wasmURL, workerURL }), // core-mt with diag worker
+        this.ffmpeg.load({ classWorkerURL: diagWorkerURL, coreURL, wasmURL, workerURL }), // core-mt with diag worker
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
