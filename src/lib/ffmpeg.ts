@@ -128,25 +128,21 @@ export class FFmpegEngine {
       // from inside the Worker, so we can see where exactly it hangs.
       const diagWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
 
-      const aliveWorkerURL = new URL('./ffmpeg-alive-worker.js', import.meta.url).href;
+      const classicWorkerURL = new URL('./ffmpeg-classic-worker.js', import.meta.url).href;
 
-      // Direct test: create a minimal module Worker to test if module Workers work
+      // Test classic Worker (no type: 'module')
       try {
-        log('info', `🧪 Creating module Worker from: ${aliveWorkerURL}`);
-        const testWorker = new Worker(aliveWorkerURL, { type: 'module' });
+        log('info', `🧪 Creating CLASSIC Worker from: ${classicWorkerURL}`);
+        const testWorker = new Worker(classicWorkerURL); // No type option = classic
         testWorker.onmessage = (ev) => {
-          log('info', `🧪 MODULE WORKER ALIVE: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 200)}`);
+          log('info', `🧪 CLASSIC WORKER ALIVE: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 200)}`);
         };
         testWorker.onerror = (ev) => {
-          log('error', `🧪 MODULE WORKER ERROR: message=${ev.message} filename=${ev.filename} lineno=${ev.lineno} colno=${ev.colno} error=${String(ev.error)}`);
-        };
-        // Also try messageerror
-        testWorker.onmessageerror = (ev) => {
-          log('error', `🧪 MODULE WORKER messageerror: ${JSON.stringify(ev)}`);
+          log('error', `🧪 CLASSIC WORKER ERROR: message=${ev.message} filename=${ev.filename} lineno=${ev.lineno} colno=${ev.colno} error=${String(ev.error)}`);
         };
         testWorker.postMessage({ type: 'PING', data: 'hello' });
       } catch (err) {
-        log('error', `🧪 Failed to create module Worker: ${err instanceof Error ? err.message : String(err)}`);
+        log('error', `🧪 Failed to create classic Worker: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
