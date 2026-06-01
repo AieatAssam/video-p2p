@@ -124,8 +124,12 @@ export class FFmpegEngine {
       // the multi-thread WASM runtime. Needed for core-mt only.
       const workerURL = `${BASE_URL}/ffmpeg-core.worker.js`;
 
-      // Initialize WASM runtime (compile + instantiate)
+      // Use a diagnostic worker that logs each step of the load process
+      // from inside the Worker, so we can see where exactly it hangs.
+      const classWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
+
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
+      log('info', `👷 Diagnostic worker: ${classWorkerURL}`);
       const t3 = performance.now();
 
       // 60s timeout: 31 MB WASM download + multi-thread compilation.
@@ -133,7 +137,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ coreURL, wasmURL, workerURL }), // core-mt: include workerURL for pthreads
+        this.ffmpeg.load({ classWorkerURL, coreURL, wasmURL, workerURL }), // core-mt with diag worker
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
