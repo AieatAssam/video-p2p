@@ -124,29 +124,13 @@ export class FFmpegEngine {
       // the multi-thread WASM runtime. Needed for core-mt only.
       const workerURL = `${BASE_URL}/ffmpeg-core.worker.js`;
 
-      // Use a diagnostic worker that logs each step of the load process
-      // from inside the Worker, so we can see where exactly it hangs.
-      const diagWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
-
-      const classicWorkerURL = new URL('./ffmpeg-classic-worker.js', import.meta.url).href;
-
-      // Test classic Worker (no type: 'module')
-      try {
-        log('info', `🧪 Creating CLASSIC Worker from: ${classicWorkerURL}`);
-        const testWorker = new Worker(classicWorkerURL); // No type option = classic
-        testWorker.onmessage = (ev) => {
-          log('info', `🧪 CLASSIC WORKER ALIVE: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 200)}`);
-        };
-        testWorker.onerror = (ev) => {
-          log('error', `🧪 CLASSIC WORKER ERROR: message=${ev.message} filename=${ev.filename} lineno=${ev.lineno} colno=${ev.colno} error=${String(ev.error)}`);
-        };
-        testWorker.postMessage({ type: 'PING', data: 'hello' });
-      } catch (err) {
-        log('error', `🧪 Failed to create classic Worker: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      // Note: Module Workers ({type:"module"}) are incompatible with GitHub Pages'
+      // content-type headers (application/javascript; charset=utf-8) on WebKit.
+      // The postbuild script patches {type:"module"} to use classic Workers instead.
+      // Classic Workers handle dynamic import() for the ESM core file via the
+      // catch path in @ffmpeg/ffmpeg's worker.js (importScripts fails on ESM).
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
-      log('info', `👷 Diagnostic worker: ${diagWorkerURL}`);
       const t3 = performance.now();
 
       // 60s timeout: 31 MB WASM download + multi-thread compilation.
@@ -154,7 +138,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ classWorkerURL: diagWorkerURL, coreURL, wasmURL, workerURL }), // core-mt with diag worker
+        this.ffmpeg.load({ coreURL, wasmURL, workerURL }), // core-mt with classic Worker (patched by postbuild)
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
