@@ -1,5 +1,5 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { toBlobURL, fetchFile } from '@ffmpeg/util';
+import { fetchFile } from '@ffmpeg/util';
 import type { ProgressEvent } from '../types';
 import type { LogEntry } from '../types';
 
@@ -8,13 +8,17 @@ type EngineLogger = (level: LogEntry['level'], message: string) => void;
 
 /**
  * CDN base URL for ffmpeg.wasm core files.
- * Uses the single-thread build (@ffmpeg/core) which is compatible across
- * all browsers (Chromium, Firefox, WebKit/Safari). The multi-thread build
- * (@ffmpeg/core-mt) needs a separate worker script loaded via blob URL
- * Worker + importScripts, which hangs on WebKit/Safari.
+ * Uses the single-thread build (@ffmpeg/core) — the ESM Worker path uses
+ * dynamic import() for ffmpeg-core.js and fetch() for ffmpeg-core.wasm.
+ * CDN URLs are passed directly (no blob URL wrapping) to avoid issues with
+ * blob URL fetch/import hanging inside ES module Workers on Chromium.
+ *
+ * The multi-thread build (@ffmpeg/core-mt) is NOT used because Vite bundles
+ * the @ffmpeg/ffmpeg worker.js, and the ESM Worker path in that file
+ * depends on import() which works with raw CDN URLs that have CORS headers.
  *
  * The single-thread build:
- * - No workerURL needed — runs WASM on the main thread
+ * - No workerURL needed
  * - Works with cross-origin isolation (SharedArrayBuffer for file I/O)
  * - ~256MB WASM memory limit (sufficient for files up to ~100MB)
  */
@@ -25,7 +29,7 @@ const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
  * error tracking, and progress reporting.
  *
  * Design notes:
- * - Uses toBlobURL() to avoid CORS issues with importScripts() inside the worker
+ * - Passes CDN URLs directly to @ffmpeg/ffmpeg (no blob URL wrapping)
  * - Progress events are forwarded via a pluggable callback (set per execCommand call)
  * - The virtual filesystem (MEMFS) is ephemeral — all files must be written,
  *   processed, and read back within a single session
@@ -88,10 +92,15 @@ export class FFmpegEngine {
   }
 
   /**
-   * Loads ffmpeg.wasm from CDN via toBlobURL().
+   * Loads ffmpeg.wasm from CDN using direct URLs.
    * Idempotent — safe to call multiple times.
    * Throws if the core files cannot be fetched or the WASM runtime fails.
    * Logs each step through the diag logger for debugging load failures.
+   *
+   * Core .js and .wasm are passed as CDN URLs directly to @ffmpeg/ffmpeg,
+   * which handles fetching inside the ESM Worker via dynamic import()
+   * and fetch() respectively. No blob URL wrapping is used since CDN URLs
+   * have proper CORS and CORP headers.
    */
   async load(): Promise<void> {
     if (this.loaded) return;
@@ -101,24 +110,17 @@ export class FFmpegEngine {
     log('info', `🔌 FFmpeg load: CDN=${BASE_URL}`);
 
     try {
-      // Step 1: fetch ffmpeg-core.js (JS glue)
-      log('info', `⬇️ Fetching ffmpeg-core.js...`);
-      const t1 = performance.now();
-      const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
-      log('info', `⬇️ ffmpeg-core.js fetched in ${(performance.now() - t1).toFixed(0)}ms`);
+      // Core URL (ESM module loaded via dynamic import() inside Worker)
+      const coreURL = `${BASE_URL}/ffmpeg-core.js`;
 
-      // Step 2: fetch ffmpeg-core.wasm (~31 MB)
-      log('info', `⬇️ Fetching ffmpeg-core.wasm (~31 MB)...`);
-      const t2 = performance.now();
-      const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
-      log('info', `⬇️ ffmpeg-core.wasm fetched in ${(performance.now() - t2).toFixed(0)}ms`);
+      // WASM URL (fetched via fetch() inside Worker, compiled by WebAssembly.instantiateStreaming)
+      const wasmURL = `${BASE_URL}/ffmpeg-core.wasm`;
 
-      // Step 3: initialize WASM runtime (compile + instantiate)
-      log('info', `⚙️ Initializing ffmpeg WASM runtime (single-thread)...`);
+      // Initialize WASM runtime (compile + instantiate)
+      log('info', `⚙️ Initializing ffmpeg WASM runtime (~9 MB)...`);
       const t3 = performance.now();
 
-      // 60s timeout: WASM download took 31s for the 31 MB file on first visit,
-      // plus compilation time. 60s gives room for slow connections.
+      // 60s timeout for WASM download + compilation.
       const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : true;
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
