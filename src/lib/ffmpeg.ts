@@ -129,8 +129,12 @@ export class FFmpegEngine {
       // The postbuild script patches {type:"module"} to use classic Workers instead.
       // Classic Workers handle dynamic import() for the ESM core file via the
       // catch path in @ffmpeg/ffmpeg's worker.js (importScripts fails on ESM).
-      const diagWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
-      log('info', `👷 Diag worker: ${diagWorkerURL}`);
+      //
+      // We use a custom worker that SKIPS importScripts entirely because it
+      // blocks the Worker's event loop under COEP:require-corp in WebKit
+      // when called with a cross-origin CDN URL.
+      const fixedWorkerURL = new URL('./ffmpeg-noimport-worker.js', import.meta.url).href;
+      log('info', `👷 Fixed worker: ${fixedWorkerURL}`);
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
       const t3 = performance.now();
@@ -140,7 +144,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ classWorkerURL: diagWorkerURL, coreURL, wasmURL, workerURL }), // diag worker for tracing
+        this.ffmpeg.load({ classWorkerURL: fixedWorkerURL, coreURL, wasmURL, workerURL }), // no-importScripts worker
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
