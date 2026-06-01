@@ -8,21 +8,21 @@ type EngineLogger = (level: LogEntry['level'], message: string) => void;
 
 /**
  * CDN base URL for ffmpeg.wasm core files.
- * Uses the single-thread build (@ffmpeg/core) — the ESM Worker path uses
- * dynamic import() for ffmpeg-core.js and fetch() for ffmpeg-core.wasm.
- * CDN URLs are passed directly (no blob URL wrapping) to avoid issues with
- * blob URL fetch/import hanging inside ES module Workers on Chromium.
+ * Uses the multi-thread build (@ffmpeg/core-mt) which supports growable
+ * SharedArrayBuffer memory and pthread-based parallelism for faster
+ * processing of high-resolution video.
  *
- * The multi-thread build (@ffmpeg/core-mt) is NOT used because Vite bundles
- * the @ffmpeg/ffmpeg worker.js, and the ESM Worker path in that file
- * depends on import() which works with raw CDN URLs that have CORS headers.
+ * CDN URLs are passed directly (no blob URL wrapping) since the CDN sends
+ * both CORS (access-control-allow-origin: *) and CORP
+ * (cross-origin-resource-policy: cross-origin) headers, satisfying the
+ * COEP require-corp policy imposed by the cross-origin isolation SW.
  *
- * The single-thread build:
- * - No workerURL needed
- * - Works with cross-origin isolation (SharedArrayBuffer for file I/O)
- * - ~256MB WASM memory limit (sufficient for files up to ~100MB)
+ * Multi-thread requirements:
+ * - crossOriginIsolated=true (needed for SharedArrayBuffer + pthreads)
+ * - workerURL for ffmpeg-core.worker.js (loaded by pthread workers)
+ * - ~31 MB WASM binary (includes pthread support + extra codecs)
  */
-const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
+const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm';
 
 /**
  * Wraps the ffmpeg.wasm FFmpeg instance with lifecycle management,
@@ -92,15 +92,18 @@ export class FFmpegEngine {
   }
 
   /**
-   * Loads ffmpeg.wasm from CDN using direct URLs.
+   * Loads ffmpeg.wasm from CDN using direct URLs (multi-thread build).
    * Idempotent — safe to call multiple times.
    * Throws if the core files cannot be fetched or the WASM runtime fails.
    * Logs each step through the diag logger for debugging load failures.
    *
-   * Core .js and .wasm are passed as CDN URLs directly to @ffmpeg/ffmpeg,
-   * which handles fetching inside the ESM Worker via dynamic import()
-   * and fetch() respectively. No blob URL wrapping is used since CDN URLs
-   * have proper CORS and CORP headers.
+   * Core .js, .wasm, and .worker.js are passed as CDN URLs directly to
+   * @ffmpeg/ffmpeg, which handles fetching inside the ESM Worker via
+   * dynamic import() and fetch(). The multi-thread build also needs a
+   * workerURL for pthread workers (ffmpeg-core.worker.js).
+   *
+   * No blob URL wrapping is used since CDN URLs have proper CORS headers
+   * and CORP (cross-origin-resource-policy: cross-origin).
    */
   async load(): Promise<void> {
     if (this.loaded) return;
@@ -110,22 +113,27 @@ export class FFmpegEngine {
     log('info', `🔌 FFmpeg load: CDN=${BASE_URL}`);
 
     try {
-      // Core URL (ESM module loaded via dynamic import() inside Worker)
+      // Core URL: ESM module loaded via dynamic import() inside @ffmpeg/ffmpeg Worker
       const coreURL = `${BASE_URL}/ffmpeg-core.js`;
 
-      // WASM URL (fetched via fetch() inside Worker, compiled by WebAssembly.instantiateStreaming)
+      // WASM URL: fetched via fetch() inside the Worker, compiled
+      // by WebAssembly.instantiateStreaming()
       const wasmURL = `${BASE_URL}/ffmpeg-core.wasm`;
 
+      // Worker URL: loaded by pthread workers via importScripts() inside
+      // the multi-thread WASM runtime. Needed for core-mt only.
+      const workerURL = `${BASE_URL}/ffmpeg-core.worker.js`;
+
       // Initialize WASM runtime (compile + instantiate)
-      log('info', `⚙️ Initializing ffmpeg WASM runtime (~9 MB)...`);
+      log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
       const t3 = performance.now();
 
-      // 60s timeout for WASM download + compilation.
+      // 60s timeout: 31 MB WASM download + multi-thread compilation.
       const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : true;
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ coreURL, wasmURL }), // single-thread: no workerURL
+        this.ffmpeg.load({ coreURL, wasmURL, workerURL }), // core-mt: include workerURL for pthreads
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
