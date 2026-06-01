@@ -128,20 +128,25 @@ export class FFmpegEngine {
       // from inside the Worker, so we can see where exactly it hangs.
       const diagWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
 
-      // Direct test: create a minimal Worker and see if it responds
+      const aliveWorkerURL = new URL('./ffmpeg-alive-worker.js', import.meta.url).href;
+
+      // Direct test: create a minimal module Worker to test if module Workers work
       try {
-        log('info', `🧪 Creating direct test Worker (non-diag)...`);
-        const testWorker = new Worker(diagWorkerURL, { type: 'module' });
+        log('info', `🧪 Creating module Worker from: ${aliveWorkerURL}`);
+        const testWorker = new Worker(aliveWorkerURL, { type: 'module' });
         testWorker.onmessage = (ev) => {
-          log('info', `🧪 DIRECT worker message: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 120)}`);
+          log('info', `🧪 MODULE WORKER ALIVE: type=${ev.data?.type} data=${JSON.stringify(ev.data?.data)?.substring(0, 200)}`);
         };
         testWorker.onerror = (ev) => {
-          log('error', `🧪 DIRECT worker error: message=${ev.message} filename=${ev.filename} lineno=${ev.lineno} colno=${ev.colno} error=${String(ev.error)}`);
+          log('error', `🧪 MODULE WORKER ERROR: message=${ev.message} filename=${ev.filename} lineno=${ev.lineno} colno=${ev.colno} error=${String(ev.error)}`);
+        };
+        // Also try messageerror
+        testWorker.onmessageerror = (ev) => {
+          log('error', `🧪 MODULE WORKER messageerror: ${JSON.stringify(ev)}`);
         };
         testWorker.postMessage({ type: 'PING', data: 'hello' });
-        log('info', `🧪 Direct test worker created and message sent`);
       } catch (err) {
-        log('error', `🧪 Failed to create test Worker: ${err instanceof Error ? err.message : String(err)}`);
+        log('error', `🧪 Failed to create module Worker: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
