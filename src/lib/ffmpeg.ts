@@ -130,11 +130,20 @@ export class FFmpegEngine {
       // Classic Workers handle dynamic import() for the ESM core file via the
       // catch path in @ffmpeg/ffmpeg's worker.js (importScripts fails on ESM).
       //
-      // We use a custom worker that SKIPS importScripts entirely because it
-      // blocks the Worker's event loop under COEP:require-corp in WebKit
-      // when called with a cross-origin CDN URL.
-      const fixedWorkerURL = new URL('./ffmpeg-noimport-worker.js', import.meta.url).href;
-      log('info', `👷 Fixed worker: ${fixedWorkerURL}`);
+      // Test: does importScripts work with cross-origin CDN URL under COEP?
+      const importTestURL = new URL('./ffmpeg-importscriptstest-worker.js', import.meta.url).href;
+      try {
+        log('info', `🧪 Testing importScripts via: ${importTestURL}`);
+        const tw = new Worker(importTestURL);
+        tw.onmessage = (ev) => {
+          log('info', `🧪 importScripts TEST: ${JSON.stringify(ev.data?.data)?.substring(0, 200)}`);
+        };
+        tw.onerror = (ev) => {
+          log('error', `🧪 importScripts TEST ERROR: message=${ev.message}`);
+        };
+      } catch (err) {
+        log('error', `🧪 importScripts TEST FAILED: ${String(err)}`);
+      }
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
       const t3 = performance.now();
