@@ -129,6 +129,8 @@ export class FFmpegEngine {
       // The postbuild script patches {type:"module"} to use classic Workers instead.
       // Classic Workers handle dynamic import() for the ESM core file via the
       // catch path in @ffmpeg/ffmpeg's worker.js (importScripts fails on ESM).
+      const diagWorkerURL = new URL('./ffmpeg-diag-worker.js', import.meta.url).href;
+      log('info', `👷 Diag worker: ${diagWorkerURL}`);
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
       const t3 = performance.now();
@@ -138,7 +140,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ coreURL, wasmURL, workerURL }), // core-mt with classic Worker (patched by postbuild)
+        this.ffmpeg.load({ classWorkerURL: diagWorkerURL, coreURL, wasmURL, workerURL }), // diag worker for tracing
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
