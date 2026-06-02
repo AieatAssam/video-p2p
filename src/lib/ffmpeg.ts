@@ -22,7 +22,7 @@ type EngineLogger = (level: LogEntry['level'], message: string) => void;
  * - workerURL for ffmpeg-core.worker.js (loaded by pthread workers)
  * - ~31 MB WASM binary (includes pthread support + extra codecs)
  */
-const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm';
+const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/umd';
 
 /**
  * Wraps the ffmpeg.wasm FFmpeg instance with lifecycle management,
@@ -127,23 +127,8 @@ export class FFmpegEngine {
       // Note: Module Workers ({type:"module"}) are incompatible with GitHub Pages'
       // content-type headers (application/javascript; charset=utf-8) on WebKit.
       // The postbuild script patches {type:"module"} to use classic Workers instead.
-      // Classic Workers handle dynamic import() for the ESM core file via the
-      // catch path in @ffmpeg/ffmpeg's worker.js (importScripts fails on ESM).
-      //
-      // Test: does importScripts work with cross-origin CDN URL under COEP?
-      const importTestURL = new URL('./ffmpeg-importscriptstest-worker.js', import.meta.url).href;
-      try {
-        log('info', `🧪 Testing importScripts via: ${importTestURL}`);
-        const tw = new Worker(importTestURL);
-        tw.onmessage = (ev) => {
-          log('info', `🧪 importScripts TEST: ${JSON.stringify(ev.data?.data)?.substring(0, 200)}`);
-        };
-        tw.onerror = (ev) => {
-          log('error', `🧪 importScripts TEST ERROR: message=${ev.message}`);
-        };
-      } catch (err) {
-        log('error', `🧪 importScripts TEST FAILED: ${String(err)}`);
-      }
+      // Uses UMD build (dist/umd/) so importScripts() works in the classic Worker.
+      // The ESM build (dist/esm/) has import.meta.url which throws in importScripts().
 
       log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
       const t3 = performance.now();
@@ -153,7 +138,7 @@ export class FFmpegEngine {
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const LOAD_TIMEOUT_MS = 60_000;
       await Promise.race([
-        this.ffmpeg.load({ classWorkerURL: fixedWorkerURL, coreURL, wasmURL, workerURL }), // no-importScripts worker
+        this.ffmpeg.load({ coreURL, wasmURL, workerURL }), // classic Worker + UMD build
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(
             `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
