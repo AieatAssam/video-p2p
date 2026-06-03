@@ -1,5 +1,5 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile } from '@ffmpeg/util';
+import { toBlobURL, fetchFile } from '@ffmpeg/util';
 import type { ProgressEvent } from '../types';
 import type { LogEntry } from '../types';
 
@@ -92,18 +92,23 @@ export class FFmpegEngine {
   }
 
   /**
-   * Loads ffmpeg.wasm from CDN using direct URLs (multi-thread build).
+   * Loads ffmpeg.wasm from CDN using blob URLs (UMD build).
    * Idempotent — safe to call multiple times.
    * Throws if the core files cannot be fetched or the WASM runtime fails.
-   * Logs each step through the diag logger for debugging load failures.
    *
-   * Core .js, .wasm, and .worker.js are passed as CDN URLs directly to
-   * @ffmpeg/ffmpeg, which handles fetching inside the ESM Worker via
-   * dynamic import() and fetch(). The multi-thread build also needs a
-   * workerURL for pthread workers (ffmpeg-core.worker.js).
+   * Uses toBlobURL() to create same-origin blob URLs from CDN content.
+   * This is critical because importScripts(blobURL) in a classic Worker
+   * works without COEP/CORS issues (same-origin), while importScripts(cdnURL)
+   * can hang under COEP:require-corp in WebKit.
    *
-   * No blob URL wrapping is used since CDN URLs have proper CORS headers
-   * and CORP (cross-origin-resource-policy: cross-origin).
+   * Uses the UMD build (dist/umd/) which doesn't use import.meta.url,
+   * so importScripts() succeeds in classic Workers.
+   *
+   * Combined with the postbuild script that patches {type:"module"} out
+   * of Worker constructors, this gives us:
+   * 1. Classic Worker (postbuild patch)
+   * 2. importScripts(blobCoreURL) succeeds (same-origin + UMD)
+   * 3. WASM fetch/compile proceeds normally
    */
   async load(): Promise<void> {
     if (this.loaded) return;
@@ -113,25 +118,27 @@ export class FFmpegEngine {
     log('info', `🔌 FFmpeg load: CDN=${BASE_URL}`);
 
     try {
-      // Core URL: ESM module loaded via dynamic import() inside @ffmpeg/ffmpeg Worker
-      const coreURL = `${BASE_URL}/ffmpeg-core.js`;
+      // Step 1: fetch ffmpeg-core.js (UMD classic script, same-origin blob)
+      log('info', `⬇️ Fetching ffmpeg-core.js (UMD)...`);
+      const t1 = performance.now();
+      const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
+      log('info', `⬇️ ffmpeg-core.js fetched in ${(performance.now() - t1).toFixed(0)}ms`);
 
-      // WASM URL: fetched via fetch() inside the Worker, compiled
-      // by WebAssembly.instantiateStreaming()
-      const wasmURL = `${BASE_URL}/ffmpeg-core.wasm`;
+      // Step 2: fetch ffmpeg-core.wasm
+      log('info', `⬇️ Fetching ffmpeg-core.wasm (~31 MB)...`);
+      const t2 = performance.now();
+      const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
+      log('info', `⬇️ ffmpeg-core.wasm fetched in ${(performance.now() - t2).toFixed(0)}ms`);
 
-      // Worker URL: loaded by pthread workers via importScripts() inside
-      // the multi-thread WASM runtime. Needed for core-mt only.
-      const workerURL = `${BASE_URL}/ffmpeg-core.worker.js`;
-
-      // Note: Module Workers ({type:"module"}) are incompatible with GitHub Pages'
-      // content-type headers (application/javascript; charset=utf-8) on WebKit.
-      // The postbuild script patches {type:"module"} to use classic Workers instead.
-      // Uses UMD build (dist/umd/) so importScripts() works in the classic Worker.
-      // The ESM build (dist/esm/) has import.meta.url which throws in importScripts().
-
-      log('info', `⚙️ Initializing ffmpeg WASM runtime (core-mt, ~31 MB)...`);
+      // Step 3: fetch ffmpeg-core.worker.js (for pthreads)
+      log('info', `⬇️ Fetching ffmpeg-core.worker.js...`);
       const t3 = performance.now();
+      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
+      log('info', `⬇️ ffmpeg-core.worker.js fetched in ${(performance.now() - t3).toFixed(0)}ms`);
+
+      // Step 4: initialize WASM runtime (compile + instantiate)
+      log('info', `⚙️ Initializing ffmpeg WASM runtime (UMD + classic Worker)...`);
+      const t4 = performance.now();
 
       // 60s timeout: 31 MB WASM download + multi-thread compilation.
       const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : true;
