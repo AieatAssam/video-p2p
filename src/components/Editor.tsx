@@ -111,26 +111,60 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
     });
 
     // Check cross-origin isolation (needed for SharedArrayBuffer / core-mt).
-    // If not isolated, the SW may have been registered but hasn't claimed
-    // this page yet — show a clear message and prompt reload.
+    // The COI service worker (registered in index.html) injects COOP/COEP
+    // headers on GitHub Pages. When crossOriginIsolated is false at mount
+    // time, one of three states applies:
+    //   1. SW is still registering — the inline script will reload the page
+    //      once active (race condition, show transient message).
+    //   2. SW registration failed — the inline script logged an error.
+    //   3. SW is active+controlling but still not isolated — rare, indicates
+    //      the SW isn't injecting headers (unsupported browser or SW scope
+    //      mismatch).
+    // The inline script handles the actual SW lifecycle; React reflects
+    // current state and provides user-facing messaging.
     if (!crossOriginIsolated) {
       addLog('warn', 'Cross-origin isolation not active — SharedArrayBuffer unavailable');
 
-      // Check if a service worker exists; if so, the page likely needs a reload
       try {
         const reg = await navigator.serviceWorker?.getRegistration();
-        if (reg) {
+
+        if (reg && reg.active && navigator.serviceWorker.controller) {
+          // Case 3: active SW controlling page but still not isolated.
+          // The SW script may be stale or not injecting headers correctly.
+          // A hard refresh (Cmd+Shift+R) clears the SW cache and re-registers.
           setLoadError(
-            'Setting up browser features for video processing… ' +
-            'Please reload the page to activate cross-origin isolation. ' +
-            'This only happens on the first visit.'
+            'Cross-origin isolation is required for video processing but ' +
+            'could not be activated. Try a hard refresh (Cmd+Shift+R / Ctrl+Shift+R) ' +
+            'to clear the service worker cache. If this persists, the browser ' +
+            'may not support SharedArrayBuffer.'
           );
           return;
         }
+
+        if (reg && !reg.active) {
+          // Case 1: SW is installed but not yet active. The HTML inline
+          // script will reload the page once it activates. Show a transient
+          // message while we wait.
+          setLoadError(
+            'Setting up browser features for video processing… ' +
+            'The page will reload automatically once ready.'
+          );
+          return;
+        }
+
+        // No SW registered — the inline script's registration may have
+        // failed, or this is a first visit and the async check raced ahead
+        // of registration. Refresh to retry the COI setup flow.
+        setLoadError(
+          'Cross-origin isolation setup is in progress. ' +
+          'Please refresh the page to retry.'
+        );
+        return;
       } catch {
-        // getRegistration might throw; fall through to general error
+        // getRegistration might throw in some contexts
       }
 
+      // Fallback: we couldn't even check SW state — generic error
       setLoadError(
         'This browser does not support the video processing features required. ' +
         'Please use Chrome, Firefox, or Edge.'

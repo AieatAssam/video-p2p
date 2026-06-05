@@ -10,36 +10,53 @@
     // Injects COOP/COEP headers at browser level for SharedArrayBuffer.
     // On GitHub Pages the CDN strips these headers, so a Service Worker
     // re-adds them after the CDN delivers the response.
+    //
+    // Pattern: detect missing isolation → register SW → wait for active →
+    // reload so SW injects headers on next navigation.
+    //
+    // Uses getRegistration() instead of sessionStorage guards because:
+    // - sessionStorage breaks when SW activation is async and takes
+    //   multiple page loads to claim the client (first load sets flag,
+    //   second load skips even though still not isolated).
+    // - getRegistration() reflects the actual SW lifecycle state.
     (function() {
-      // Already isolated — nothing to do
       if (crossOriginIsolated) return;
       if (!('serviceWorker' in navigator)) return;
 
-      // Guard: only reload once per tab session. Prevents infinite loops
-      // when SW takes multiple page loads to fully claim the client.
-      if (sessionStorage.getItem('coi-reloaded')) return;
-      sessionStorage.setItem('coi-reloaded', '1');
+      var SW_PATH = '/video-p2p/coi-serviceworker.js';
 
-      var script = '/video-p2p/coi-serviceworker.js';
-      navigator.serviceWorker.register(script).then(function(reg) {
-        // Wait for the SW to be active and controlling this page.
-        // register() resolves as soon as the SW is installed, but it
-        // hasn't claimed this page yet — so crossOriginIsolated is still
-        // false. navigator.serviceWorker.ready waits for an active SW
-        // that controls this client.
-        return navigator.serviceWorker.ready;
-      }).then(function() {
-        // Service worker is now active and controlling. If we're still
-        // not isolated, the SW didn't inject headers — show error.
-        if (!crossOriginIsolated) {
-          console.warn('SW active but crossOriginIsolation still false');
+      // Check if a SW is already registered and controlling this page.
+      // getRegistration() returns null if no SW was ever registered for
+      // this scope, or a Registration object reflecting current state.
+      navigator.serviceWorker.getRegistration().then(function(reg) {
+        // If an active SW already controls this client but we're still
+        // not isolated, something is fundamentally broken (e.g., the SW
+        // isn't injecting headers). Don't infinite-reload — just warn
+        // and let React show the error message.
+        if (reg && reg.active && navigator.serviceWorker.controller) {
+          console.warn(
+            'Active COI SW controls this page but crossOriginIsolated=false. ' +
+            'The SW may not be injecting COOP/COEP headers correctly.'
+          );
           return;
         }
-        // Reload so the page is served through the SW with COOP/COEP headers
-        window.location.reload();
-      }).catch(function() {
-        // SW registration failed — React will detect missing cross-origin
-        // isolation and show an appropriate error message.
+
+        // Register the COI SW. If there's already a registration in
+        // progress, register() returns the existing one (idempotent).
+        navigator.serviceWorker.register(SW_PATH).then(function() {
+          // register() resolves on install. navigator.serviceWorker.ready
+          // waits for the SW to be active AND controlling this client.
+          // Only then will the next navigation receive injected headers.
+          return navigator.serviceWorker.ready;
+        }).then(function() {
+          // SW is active and controlling. Reload so the next navigation
+          // goes through the SW with COOP/COEP headers injected.
+          window.location.reload();
+        }).catch(function(err) {
+          // SW registration failed. React will detect missing cross-origin
+          // isolation and show an appropriate error message.
+          console.error('COI SW setup failed:', err);
+        });
       });
     })();
     </script>
