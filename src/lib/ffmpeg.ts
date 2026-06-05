@@ -148,8 +148,19 @@ export class FFmpegEngine {
   }
 
   /**
-   * Fetches core files from CDN and wraps them in same-origin blob URLs.
-   * Returns { coreURL, wasmURL, workerURL? } for the specified base path.
+   * Fetches core files for ffmpeg.wasm initialization.
+   *
+   * Strategy (hybrid blob + direct CDN):
+   * - coreURL: blob URL (from toBlobURL) — required for importScripts()
+   *   to work on WebKit under COEP. importScripts(crossOriginURL) hangs.
+   * - wasmURL: direct CDN URL — Emscripten loads WASM via fetch(), which
+   *   works with CDN's cross-origin-resource-policy: cross-origin header.
+   *   Blob URLs for WASM may cause WebAssembly.instantiateStreaming to
+   *   fail on WebKit due to MIME/content-encoding handling differences.
+   * - workerURL: direct CDN URL — same reasoning as wasmURL. Emscripten
+   *   creates pthread Workers from this URL via new Worker(), which
+   *   works with CDN URLs (they have proper CORS + CORP headers).
+   *
    * workerURL is omitted for single-thread core (no pthreads).
    */
   private async fetchCoreFiles(
@@ -159,21 +170,22 @@ export class FFmpegEngine {
     const log = this.diagLog ?? (() => {});
     const label = variant === 'mt' ? 'core-mt' : 'core';
 
-    log('info', `⬇️ Fetching ${label} core files from CDN...`);
+    log('info', `⬇️ Fetching ${label} core files...`);
     const t0 = performance.now();
 
+    // core.js: MUST be blob URL (importScripts needs same-origin on WebKit)
     const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-    log('info', `⬇️ ${label} ffmpeg-core.js: ${(performance.now() - t0).toFixed(0)}ms`);
+    log('info', `⬇️ ${label} ffmpeg-core.js (blob): ${(performance.now() - t0).toFixed(0)}ms`);
 
-    const t1 = performance.now();
-    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-    log('info', `⬇️ ${label} ffmpeg-core.wasm: ${(performance.now() - t1).toFixed(0)}ms`);
+    // wasm: direct CDN URL (fetch() works with CDN CORP headers)
+    const wasmURL = `${baseURL}/ffmpeg-core.wasm`;
+    log('info', `⬇️ ${label} ffmpeg-core.wasm (CDN): resolved`);
 
     let workerURL: string | undefined;
     if (variant === 'mt') {
-      const t2 = performance.now();
-      workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
-      log('info', `⬇️ ${label} ffmpeg-core.worker.js: ${(performance.now() - t2).toFixed(0)}ms`);
+      // worker.js: direct CDN URL (new Worker() with CDN URL works)
+      workerURL = `${baseURL}/ffmpeg-core.worker.js`;
+      log('info', `⬇️ ${label} ffmpeg-core.worker.js (CDN): resolved`);
     }
 
     log('info', `✅ ${label} core files ready (${(performance.now() - t0).toFixed(0)}ms total)`);
