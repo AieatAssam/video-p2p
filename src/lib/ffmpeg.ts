@@ -1,38 +1,34 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL, fetchFile } from '@ffmpeg/util';
-import type { ProgressEvent } from '../types';
-import type { LogEntry } from '../types';
+import type { ProgressEvent, LogEntry } from '../types';
 
 /** Internal callback for diagnostic logging from the engine itself. */
 type EngineLogger = (level: LogEntry['level'], message: string) => void;
 
 /**
- * CDN base URL for ffmpeg.wasm core files.
- * Uses the multi-thread build (@ffmpeg/core-mt) which supports growable
- * SharedArrayBuffer memory and pthread-based parallelism for faster
- * processing of high-resolution video.
+ * CDN base URLs for ffmpeg.wasm core files.
  *
- * CDN URLs are passed directly (no blob URL wrapping) since the CDN sends
- * both CORS (access-control-allow-origin: *) and CORP
- * (cross-origin-resource-policy: cross-origin) headers, satisfying the
- * COEP require-corp policy imposed by the cross-origin isolation SW.
+ * Strategy: try multi-thread (core-mt) first for faster processing with
+ * pthreads + SharedArrayBuffer. If that hangs (known issue on WebKit where
+ * pthread worker creation silently fails inside createFFmpegCore), fall
+ * back to single-thread (core) which doesn't use pthreads.
  *
- * Multi-thread requirements:
- * - crossOriginIsolated=true (needed for SharedArrayBuffer + pthreads)
- * - workerURL for ffmpeg-core.worker.js (loaded by pthread workers)
- * - ~31 MB WASM binary (includes pthread support + extra codecs)
+ * - core-mt: ~31 MB WASM, pthread parallelism, growable SharedArrayBuffer
+ * - core:    ~9.3 MB WASM, no pthreads, 256 MB ArrayBuffer limit
  */
-const BASE_URL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/umd';
+const CORE_MT_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/umd';
+const CORE_ST_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
 
 /**
  * Wraps the ffmpeg.wasm FFmpeg instance with lifecycle management,
  * error tracking, and progress reporting.
  *
  * Design notes:
- * - Passes CDN URLs directly to @ffmpeg/ffmpeg (no blob URL wrapping)
- * - Progress events are forwarded via a pluggable callback (set per execCommand call)
- * - The virtual filesystem (MEMFS) is ephemeral — all files must be written,
- *   processed, and read back within a single session
+ * - Three-part fix for GitHub Pages + WebKit: UMD build, toBlobURL for
+ *   same-origin blob URLs, and postbuild strips {type:"module"} from Workers
+ * - Single-thread fallback when core-mt pthread worker creation hangs
+ * - Pre-flight Worker diagnostic test verifies Worker infrastructure
+ * - Progress events are forwarded via a pluggable callback
  */
 export class FFmpegEngine {
   private ffmpeg: FFmpeg;
@@ -41,6 +37,8 @@ export class FFmpegEngine {
   private progressCallback: ((event: ProgressEvent) => void) | null = null;
   private logCallback: ((message: string) => void) | null = null;
   private diagLog: EngineLogger | null = null;
+  /** Which core was loaded: 'mt' (multi-thread) or 'st' (single-thread) */
+  private coreType: 'mt' | 'st' | null = null;
 
   constructor() {
     this.ffmpeg = new FFmpeg();
@@ -56,6 +54,11 @@ export class FFmpegEngine {
   /** Sets a diagnostic logger for tracking the load process. */
   setDiagLogger(logger: EngineLogger | null): void {
     this.diagLog = logger;
+  }
+
+  /** Returns which core variant was loaded. */
+  getCoreType(): 'mt' | 'st' | null {
+    return this.coreType;
   }
 
   /** Registers the ffmpeg log/stderr listener. */
@@ -92,75 +95,191 @@ export class FFmpegEngine {
   }
 
   /**
+   * Pre-flight diagnostic: creates a minimal classic Worker to verify
+   * Worker infrastructure works before attempting full ffmpeg load.
+   * Returns timing info or throws with the specific failure reason.
+   */
+  private async diagnosticWorkerTest(): Promise<string> {
+    const t0 = performance.now();
+    const log = this.diagLog ?? (() => {});
+
+    // Create a minimal Worker from a blob URL (classic, no type option).
+    // This tests: Worker creation, blob URL MIME acceptance, postMessage round-trip.
+    const workerCode = `
+      self.onmessage = function(e) {
+        self.postMessage({ type: 'pong', data: e.data });
+      };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const blobURL = URL.createObjectURL(blob);
+
+    try {
+      const result = await new Promise<string>((resolve, reject) => {
+        const worker = new Worker(blobURL); // classic Worker (no type option)
+        const timeout = setTimeout(() => {
+          worker.terminate();
+          reject(new Error('Diagnostic Worker timed out after 5s — Worker infrastructure broken'));
+        }, 5000);
+
+        worker.onmessage = (ev) => {
+          clearTimeout(timeout);
+          worker.terminate();
+          resolve(`Worker round-trip: ${(performance.now() - t0).toFixed(0)}ms`);
+        };
+
+        worker.onerror = (ev) => {
+          clearTimeout(timeout);
+          worker.terminate();
+          const fields = ['message', 'filename', 'lineno', 'colno']
+            .map((k) => `${k}=${(ev as unknown as Record<string, unknown>)[k] ?? 'undefined'}`)
+            .join(', ');
+          reject(new Error(`Diagnostic Worker failed to load: ${fields}`));
+        };
+
+        worker.postMessage({ type: 'ping' });
+      });
+
+      URL.revokeObjectURL(blobURL);
+      return result;
+    } catch (err) {
+      URL.revokeObjectURL(blobURL);
+      throw err;
+    }
+  }
+
+  /**
+   * Fetches core files from CDN and wraps them in same-origin blob URLs.
+   * Returns { coreURL, wasmURL, workerURL? } for the specified base path.
+   * workerURL is omitted for single-thread core (no pthreads).
+   */
+  private async fetchCoreFiles(
+    baseURL: string,
+    variant: 'mt' | 'st'
+  ): Promise<{ coreURL: string; wasmURL: string; workerURL?: string }> {
+    const log = this.diagLog ?? (() => {});
+    const label = variant === 'mt' ? 'core-mt' : 'core';
+
+    log('info', `⬇️ Fetching ${label} core files from CDN...`);
+    const t0 = performance.now();
+
+    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+    log('info', `⬇️ ${label} ffmpeg-core.js: ${(performance.now() - t0).toFixed(0)}ms`);
+
+    const t1 = performance.now();
+    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+    log('info', `⬇️ ${label} ffmpeg-core.wasm: ${(performance.now() - t1).toFixed(0)}ms`);
+
+    let workerURL: string | undefined;
+    if (variant === 'mt') {
+      const t2 = performance.now();
+      workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+      log('info', `⬇️ ${label} ffmpeg-core.worker.js: ${(performance.now() - t2).toFixed(0)}ms`);
+    }
+
+    log('info', `✅ ${label} core files ready (${(performance.now() - t0).toFixed(0)}ms total)`);
+
+    return { coreURL, wasmURL, workerURL };
+  }
+
+  /**
+   * Attempts to load a specific core variant with a timeout.
+   * Terminates the ffmpeg instance on failure so it can be retried.
+   */
+  private async tryLoad(
+    baseURL: string,
+    variant: 'mt' | 'st',
+    timeoutMs: number
+  ): Promise<void> {
+    const log = this.diagLog ?? (() => {});
+    const label = variant === 'mt' ? 'core-mt (multi-thread)' : 'core (single-thread)';
+
+    // Fetch core files from CDN into same-origin blob URLs.
+    const { coreURL, wasmURL, workerURL } = await this.fetchCoreFiles(baseURL, variant);
+
+    // Build load config — omit workerURL for single-thread (no pthreads).
+    const config: { coreURL: string; wasmURL: string; workerURL?: string } = {
+      coreURL,
+      wasmURL,
+    };
+    if (workerURL) config.workerURL = workerURL;
+
+    const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false;
+    const cores = navigator.hardwareConcurrency ?? 'unknown';
+
+    log('info', `⚙️ Initializing ${label} (timeout: ${(timeoutMs / 1000).toFixed(0)}s)...`);
+    const t0 = performance.now();
+
+    await Promise.race([
+      this.ffmpeg.load(config),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(
+          `${label} load timed out after ${(timeoutMs / 1000).toFixed(0)}s. ` +
+          `isolated=${isolated}, cores=${cores}`
+        )), timeoutMs)
+      ),
+    ]);
+
+    log('info', `✅ ${label} initialized in ${(performance.now() - t0).toFixed(0)}ms`);
+  }
+
+  /**
    * Loads ffmpeg.wasm from CDN using blob URLs (UMD build).
+   *
+   * Strategy:
+   *   1. Run diagnostic Worker test (verify Worker infrastructure)
+   *   2. Try core-mt (multi-thread, pthreads) with 15s timeout
+   *   3. If core-mt fails, terminate + try core (single-thread) with 30s timeout
+   *
    * Idempotent — safe to call multiple times.
-   * Throws if the core files cannot be fetched or the WASM runtime fails.
-   *
-   * Uses toBlobURL() to create same-origin blob URLs from CDN content.
-   * This is critical because importScripts(blobURL) in a classic Worker
-   * works without COEP/CORS issues (same-origin), while importScripts(cdnURL)
-   * can hang under COEP:require-corp in WebKit.
-   *
-   * Uses the UMD build (dist/umd/) which doesn't use import.meta.url,
-   * so importScripts() succeeds in classic Workers.
-   *
-   * Combined with the postbuild script that patches {type:"module"} out
-   * of Worker constructors, this gives us:
-   * 1. Classic Worker (postbuild patch)
-   * 2. importScripts(blobCoreURL) succeeds (same-origin + UMD)
-   * 3. WASM fetch/compile proceeds normally
    */
   async load(): Promise<void> {
     if (this.loaded) return;
     const log = this.diagLog ?? (() => {});
     const t0 = performance.now();
 
-    log('info', `🔌 FFmpeg load: CDN=${BASE_URL}`);
-
+    // ── Step 0: Diagnostic Worker test ──
     try {
-      // Step 1: fetch ffmpeg-core.js (UMD classic script, same-origin blob)
-      log('info', `⬇️ Fetching ffmpeg-core.js (UMD)...`);
-      const t1 = performance.now();
-      const coreURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, 'text/javascript');
-      log('info', `⬇️ ffmpeg-core.js fetched in ${(performance.now() - t1).toFixed(0)}ms`);
+      const diagResult = await this.diagnosticWorkerTest();
+      log('info', `🔧 Diagnostic Worker test: ${diagResult}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      log('error', `❌ Diagnostic Worker test failed: ${message}`);
+      this.lastError = `Worker infrastructure broken: ${message}`;
+      throw err;
+    }
 
-      // Step 2: fetch ffmpeg-core.wasm
-      log('info', `⬇️ Fetching ffmpeg-core.wasm (~31 MB)...`);
-      const t2 = performance.now();
-      const wasmURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, 'application/wasm');
-      log('info', `⬇️ ffmpeg-core.wasm fetched in ${(performance.now() - t2).toFixed(0)}ms`);
-
-      // Step 3: fetch ffmpeg-core.worker.js (for pthreads)
-      log('info', `⬇️ Fetching ffmpeg-core.worker.js...`);
-      const t3 = performance.now();
-      const workerURL = await toBlobURL(`${BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript');
-      log('info', `⬇️ ffmpeg-core.worker.js fetched in ${(performance.now() - t3).toFixed(0)}ms`);
-
-      // Step 4: initialize WASM runtime (compile + instantiate)
-      log('info', `⚙️ Initializing ffmpeg WASM runtime (UMD + classic Worker)...`);
-      const t4 = performance.now();
-
-      // 60s timeout: 31 MB WASM download + multi-thread compilation.
-      const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : true;
-      const cores = navigator.hardwareConcurrency ?? 'unknown';
-      const LOAD_TIMEOUT_MS = 60_000;
-      await Promise.race([
-        this.ffmpeg.load({ coreURL, wasmURL, workerURL }), // classic Worker + UMD build
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(
-            `ffmpeg.wasm load timed out after ${LOAD_TIMEOUT_MS / 1000}s. ` +
-            `CDN: ${BASE_URL}, isolated: ${isolated}, ` +
-            `cores: ${cores}`
-          )), LOAD_TIMEOUT_MS)
-        ),
-      ]);
+    // ── Step 1: Try core-mt ──
+    try {
+      await this.tryLoad(CORE_MT_BASE, 'mt', 15_000);
       this.loaded = true;
+      this.coreType = 'mt';
       this.lastError = null;
-      log('info', `✅ ffmpeg WASM initialized in ${(performance.now() - t0).toFixed(0)}ms total`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error loading ffmpeg';
+      log('info', `✅ ffmpeg.wasm (core-mt) ready in ${(performance.now() - t0).toFixed(0)}ms total`);
+      return;
+    } catch (mtErr) {
+      const mtMsg = mtErr instanceof Error ? mtErr.message : 'Unknown error';
+      log('warn', `⚠️ core-mt failed: ${mtMsg}`);
+      log('info', '🔄 Falling back to single-thread core...');
+
+      // Terminate the failed ffmpeg instance and create a fresh one.
+      this.ffmpeg.terminate();
+      this.ffmpeg = new FFmpeg();
+      this.setupProgressHandler();
+      this.setupLogHandler();
+    }
+
+    // ── Step 2: Fall back to core (single-thread) ──
+    try {
+      await this.tryLoad(CORE_ST_BASE, 'st', 30_000);
+      this.loaded = true;
+      this.coreType = 'st';
+      this.lastError = null;
+      log('info', `✅ ffmpeg.wasm (core, single-thread) ready in ${(performance.now() - t0).toFixed(0)}ms total`);
+    } catch (stErr) {
+      const message = stErr instanceof Error ? stErr.message : 'Unknown error loading ffmpeg';
       this.lastError = message;
-      throw error;
+      log('error', `❌ Both core variants failed. Last error: ${message}`);
+      throw stErr;
     }
   }
 
@@ -168,9 +287,6 @@ export class FFmpegEngine {
    * Executes an ffmpeg command in the Web Worker's virtual filesystem.
    * All input files must already be written via writeFile().
    * Output files are read back via readFile().
-   *
-   * @param args - ffmpeg CLI arguments (e.g., ['-i', 'input.mp4', '-vf', 'scale=320:240', 'out.mp4'])
-   * @param onProgress - Optional callback fired per progress tick with percent complete
    */
   async execCommand(
     args: string[],
@@ -228,6 +344,7 @@ export class FFmpegEngine {
   terminate(): void {
     this.ffmpeg.terminate();
     this.loaded = false;
+    this.coreType = null;
     this.lastError = null;
   }
 }
