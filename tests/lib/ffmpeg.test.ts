@@ -3,10 +3,23 @@ import { FFmpegEngine } from '../../src/lib/ffmpeg';
 
 // Mock Worker for diagnostic test
 beforeAll(() => {
-  // jsdom may not have Worker — provide a minimal mock
   if (typeof Worker === 'undefined') {
     (globalThis as unknown as Record<string, unknown>).Worker = vi.fn();
   }
+});
+
+// Mock fetch for the diagnostic Worker test (fetches core JS from CDN)
+beforeAll(() => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(((_url: RequestInfo | URL) => {
+    const url = typeof _url === 'string' ? _url : _url instanceof URL ? _url.href : String(_url);
+    if (url.includes('ffmpeg-core.js')) {
+      return Promise.resolve(new Response('self.createFFmpegCore = function(){};', {
+        status: 200,
+        headers: { 'content-type': 'text/javascript' },
+      }));
+    }
+    return Promise.resolve(new Response('ok', { status: 200 }));
+  }) as typeof fetch);
 });
 
 // Mock the ffmpeg.wasm library since it requires browser APIs
@@ -34,9 +47,9 @@ describe('FFmpegEngine', () => {
   let engine: FFmpegEngine;
 
   beforeEach(() => {
-    // Mock diagnosticWorker to succeed instantly (skip real Worker creation)
+    // Mock diagnosticWorker to skip real Worker/blob URL creation in jsdom
     vi.spyOn(FFmpegEngine.prototype as unknown as { diagnosticWorkerTest: () => Promise<string> }, 'diagnosticWorkerTest')
-      .mockResolvedValue('Worker round-trip: 1ms (mocked)');
+      .mockResolvedValue('Worker diag: PASS: fetch CDN URL: 50ms, 2KB | PASS: importScripts blob URL: 10ms, createFFmpegCore=function (mocked)');
     engine = new FFmpegEngine();
   });
 
@@ -83,7 +96,7 @@ describe('FFmpegEngine', () => {
       // instances' load to reject. Save the original mock, override,
       // then restore to prevent leaking into other tests.
       const { FFmpeg: MockFFmpeg } = await import('@ffmpeg/ffmpeg');
-      const origImpl = (MockFFmpeg as ReturnType<typeof vi.fn>).getMockImplementation();
+      const origImpl = (MockFFmpeg as ReturnType<typeof vi.fn>).getMockImplementation()!;
 
       try {
         (MockFFmpeg as ReturnType<typeof vi.fn>).mockImplementation(() => ({

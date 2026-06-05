@@ -95,36 +95,98 @@ export class FFmpegEngine {
   }
 
   /**
-   * Pre-flight diagnostic: creates a minimal classic Worker to verify
-   * Worker infrastructure works before attempting full ffmpeg load.
+   * Pre-flight diagnostic: creates a minimal classic Worker that tests
+   * the full Worker infrastructure before attempting ffmpeg load:
+   *   1. Classic Worker creation + postMessage round-trip
+   *   2. fetch() of a small CDN file from inside the Worker (COEP test)
+   *   3. importScripts() of a blob URL from inside the Worker
+   *
    * Returns timing info or throws with the specific failure reason.
    */
   private async diagnosticWorkerTest(): Promise<string> {
     const t0 = performance.now();
     const log = this.diagLog ?? (() => {});
 
-    // Create a minimal Worker from a blob URL (classic, no type option).
-    // This tests: Worker creation, blob URL MIME acceptance, postMessage round-trip.
+    // Fetch the core JS to embed in a blob for the importScripts test.
+    const coreJS = await fetch(`${CORE_ST_BASE}/ffmpeg-core.js`)
+      .then(r => r.text());
+
+    const blob = new Blob([coreJS], { type: 'text/javascript' });
+    const coreBlobURL = URL.createObjectURL(blob);
+
+    // Diagnostic worker that tests fetch + importScripts from Worker context
     const workerCode = `
+      var results = [];
+      var t0 = Date.now();
+
+      function done(ok, msg) {
+        results.push((ok ? 'PASS' : 'FAIL') + ': ' + msg);
+        self.postMessage({ type: 'done', results: results });
+      }
+
+      function fail(msg) {
+        self.postMessage({ type: 'error', message: msg });
+      }
+
+      self.onerror = function(ev) {
+        self.postMessage({ type: 'error', message: 'Worker error: ' + (ev.message || 'unknown') });
+      };
+
       self.onmessage = function(e) {
-        self.postMessage({ type: 'pong', data: e.data });
+        // Test 1: fetch a small CDN file (CORP: cross-origin, CORS: *)
+        var t1 = Date.now();
+        fetch(e.data.fetchURL, { credentials: 'same-origin' })
+          .then(function(r) {
+            if (!r.ok) { fail('fetch returned ' + r.status); return; }
+            return r.arrayBuffer();
+          })
+          .then(function(buf) {
+            results.push('PASS: fetch CDN URL: ' + (Date.now() - t1) + 'ms, ' + (buf.byteLength / 1024).toFixed(0) + 'KB');
+
+            // Test 2: importScripts of blob URL
+            var t2 = Date.now();
+            try {
+              importScripts(e.data.blobURL);
+              results.push('PASS: importScripts blob URL: ' + (Date.now() - t2) + 'ms, createFFmpegCore=' + (typeof self.createFFmpegCore));
+            } catch (err) {
+              results.push('FAIL: importScripts blob URL: ' + err.message);
+            }
+
+            done(true, 'All tests complete');
+          })
+          .catch(function(err) {
+            fail('fetch CDN URL failed: ' + err.message);
+          });
       };
     `;
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const blobURL = URL.createObjectURL(blob);
+    const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+    const workerBlobURL = URL.createObjectURL(workerBlob);
+
+    // Use the worker.js CDN URL for the fetch test — small file with proper headers
+    // (core-mt worker.js is ~2KB, has CORS + CORP headers)
+    const fetchTestURL = `${CORE_MT_BASE}/ffmpeg-core.worker.js`;
 
     try {
       const result = await new Promise<string>((resolve, reject) => {
-        const worker = new Worker(blobURL); // classic Worker (no type option)
+        const worker = new Worker(workerBlobURL); // classic Worker (no type option)
         const timeout = setTimeout(() => {
           worker.terminate();
-          reject(new Error('Diagnostic Worker timed out after 5s — Worker infrastructure broken'));
-        }, 5000);
+          reject(new Error('Diagnostic Worker timed out after 10s'));
+        }, 10_000);
 
-        worker.onmessage = (ev) => {
+        worker.onmessage = (ev: MessageEvent) => {
           clearTimeout(timeout);
           worker.terminate();
-          resolve(`Worker round-trip: ${(performance.now() - t0).toFixed(0)}ms`);
+
+          if (ev.data.type === 'error') {
+            reject(new Error(`Diagnostic Worker: ${ev.data.message}`));
+            return;
+          }
+
+          const lines: string[] = ev.data.results || [];
+          const summary = lines.join(' | ');
+          log('info', `🔧 Diag Worker results: ${summary}`);
+          resolve(`Worker diag: ${summary} (${(performance.now() - t0).toFixed(0)}ms total)`);
         };
 
         worker.onerror = (ev) => {
@@ -136,13 +198,15 @@ export class FFmpegEngine {
           reject(new Error(`Diagnostic Worker failed to load: ${fields}`));
         };
 
-        worker.postMessage({ type: 'ping' });
+        worker.postMessage({ fetchURL: fetchTestURL, blobURL: coreBlobURL });
       });
 
-      URL.revokeObjectURL(blobURL);
+      URL.revokeObjectURL(workerBlobURL);
+      URL.revokeObjectURL(coreBlobURL);
       return result;
     } catch (err) {
-      URL.revokeObjectURL(blobURL);
+      URL.revokeObjectURL(workerBlobURL);
+      URL.revokeObjectURL(coreBlobURL);
       throw err;
     }
   }
