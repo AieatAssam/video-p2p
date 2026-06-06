@@ -167,6 +167,16 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       }
 
       addLog('info', `  Resolution: ${info.width}x${info.height}, ${info.duration.toFixed(1)}s`);
+
+      // Generate thumbnails by seeking the video at evenly-spaced intervals
+      generateThumbnails(tempVideo, info.duration, url)
+        .then((urls) => {
+          setThumbnails(urls);
+          addLog('debug', `  Generated ${urls.length} thumbnails`);
+        })
+        .catch(() => {
+          addLog('warn', '  Thumbnail generation failed');
+        });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       addLog('error', `Failed to load video: ${message}`);
@@ -202,9 +212,9 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
     );
   }, []);
 
-  // Export handler — uses browser-native WebCodecs pipeline
+  // Export handler — uses browser-native WebCodecs pipeline (MP4 only)
   const handleExport = useCallback(
-    async (format: 'mp4' | 'gif' | 'audio') => {
+    async (format: 'mp4') => {
       if (!file || !videoInfo) return;
 
       let savedPreviewUrl: string | undefined;
@@ -443,3 +453,54 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 }
 
 export default Editor;
+
+/**
+ * Generate thumbnail strip by seeking a video element at evenly-spaced
+ * intervals and capturing frames via Canvas2D. Returns object URLs.
+ */
+async function generateThumbnails(
+  video: HTMLVideoElement,
+  duration: number,
+  _videoUrl: string
+): Promise<string[]> {
+  const THUMB_COUNT = 10;
+  const urls: string[] = [];
+
+  if (duration <= 0 || video.videoWidth === 0) return urls;
+
+  const canvas = document.createElement('canvas');
+  const thumbWidth = 160;
+  const thumbHeight = Math.round((thumbWidth / video.videoWidth) * video.videoHeight);
+  canvas.width = thumbWidth;
+  canvas.height = thumbHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return urls;
+
+  for (let i = 0; i < THUMB_COUNT; i++) {
+    const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
+
+    await new Promise<void>((resolve) => {
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.currentTime = seekTime;
+      // Already at position
+      if (Math.abs(video.currentTime - seekTime) < 0.05) {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      }
+    });
+
+    ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.7)
+    );
+    if (blob) {
+      urls.push(URL.createObjectURL(blob));
+    }
+  }
+
+  return urls;
+}

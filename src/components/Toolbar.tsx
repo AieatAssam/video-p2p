@@ -2,26 +2,12 @@ import React, { useCallback, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Download,
-  Share2,
-  Loader2,
-  Video,
-  Music,
-  Image as ImageIcon,
-} from 'lucide-react';
+import { Download, Share2, Loader2, Video, Music } from 'lucide-react';
 import type { VideoInfo } from '@/types';
 
 interface ToolbarProps {
   videoInfo: VideoInfo | null;
-  onExport: (format: 'mp4' | 'gif' | 'audio') => void;
+  onExport: (format: 'mp4') => void;
   onShareClick: () => void;
   isProcessing: boolean;
   className?: string;
@@ -34,23 +20,11 @@ export function Toolbar({
   isProcessing,
   className,
 }: ToolbarProps) {
-  const [exportFormat, setExportFormat] = useState<'mp4' | 'gif' | 'audio'>('mp4');
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
-  const getExportIcon = () => {
-    switch (exportFormat) {
-      case 'mp4':
-        return <Video className="h-4 w-4" />;
-      case 'gif':
-        return <ImageIcon className="h-4 w-4" />;
-      case 'audio':
-        return <Music className="h-4 w-4" />;
-    }
   };
 
   const formatDuration = (seconds: number): string => {
@@ -96,7 +70,6 @@ export function Toolbar({
 
       {/* Actions */}
       <div className="flex items-center flex-wrap gap-1.5 w-full sm:w-auto">
-        {/* Processing indicator */}
         {isProcessing && (
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -104,30 +77,17 @@ export function Toolbar({
           </div>
         )}
 
-        {/* Export */}
+        {/* Export — MP4 only (WebCodecs pipeline outputs H.264 MP4) */}
         <div className="flex items-center gap-1">
-          <Select
-            value={exportFormat}
-            onValueChange={(v) => setExportFormat(v as 'mp4' | 'gif' | 'audio')}
-          >
-            <SelectTrigger className="h-8 w-24">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="mp4">MP4</SelectItem>
-              <SelectItem value="gif">GIF</SelectItem>
-              <SelectItem value="audio">Audio</SelectItem>
-            </SelectContent>
-          </Select>
           <Button
             variant="default"
             size="sm"
-            onClick={() => onExport(exportFormat)}
+            onClick={() => onExport('mp4')}
             disabled={!videoInfo || isProcessing}
             className="gap-1"
-            aria-label={`Export as ${exportFormat.toUpperCase()}`}
+            aria-label="Export as MP4"
           >
-            {getExportIcon()}
+            <Video className="h-4 w-4" />
             Export
           </Button>
         </div>
