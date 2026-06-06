@@ -468,6 +468,15 @@ async function generateThumbnails(
 
   if (duration <= 0 || video.videoWidth === 0) return urls;
 
+  // Attach to DOM briefly — some browsers (WebKit) pause frame decoding
+  // for detached video elements, causing black frames on seek.
+  video.style.position = 'absolute';
+  video.style.opacity = '0';
+  video.style.pointerEvents = 'none';
+  video.style.width = '1px';
+  video.style.height = '1px';
+  document.body.appendChild(video);
+
   const canvas = document.createElement('canvas');
   const thumbWidth = 160;
   const thumbHeight = Math.round((thumbWidth / video.videoWidth) * video.videoHeight);
@@ -482,14 +491,17 @@ async function generateThumbnails(
     await new Promise<void>((resolve) => {
       const onSeeked = () => {
         video.removeEventListener('seeked', onSeeked);
-        resolve();
+        // Double rAF ensures the frame is decoded and ready for Canvas2D.
+        // On WebKit, a detached video may not have decoded frames immediately
+        // after 'seeked' — rAF flushes the rendering pipeline.
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       };
       video.addEventListener('seeked', onSeeked, { once: true });
       video.currentTime = seekTime;
       // Already at position
       if (Math.abs(video.currentTime - seekTime) < 0.05) {
         video.removeEventListener('seeked', onSeeked);
-        resolve();
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       }
     });
 
@@ -500,6 +512,11 @@ async function generateThumbnails(
     if (blob) {
       urls.push(URL.createObjectURL(blob));
     }
+  }
+
+  // Remove from DOM
+  if (video.parentNode) {
+    video.parentNode.removeChild(video);
   }
 
   return urls;
