@@ -114,15 +114,9 @@ export class FFmpegEngine {
     const blob = new Blob([coreJS], { type: 'text/javascript' });
     const coreBlobURL = URL.createObjectURL(blob);
 
-    // Diagnostic worker that tests fetch + importScripts from Worker context
+    // Diagnostic worker that tests fetch + importScripts + createFFmpegCore
     const workerCode = `
       var results = [];
-      var t0 = Date.now();
-
-      function done(ok, msg) {
-        results.push((ok ? 'PASS' : 'FAIL') + ': ' + msg);
-        self.postMessage({ type: 'done', results: results });
-      }
 
       function fail(msg) {
         self.postMessage({ type: 'error', message: msg });
@@ -133,7 +127,9 @@ export class FFmpegEngine {
       };
 
       self.onmessage = function(e) {
-        // Test 1: fetch a small CDN file (CORP: cross-origin, CORS: *)
+        var t0 = Date.now();
+
+        // Test 1: fetch a small CDN file (COEP test — CORP: cross-origin, CORS: *)
         var t1 = Date.now();
         fetch(e.data.fetchURL, { credentials: 'same-origin' })
           .then(function(r) {
@@ -143,16 +139,62 @@ export class FFmpegEngine {
           .then(function(buf) {
             results.push('PASS: fetch CDN URL: ' + (Date.now() - t1) + 'ms, ' + (buf.byteLength / 1024).toFixed(0) + 'KB');
 
-            // Test 2: importScripts of blob URL
+            // Test 2: importScripts of blob URL (loads Emscripten core JS)
             var t2 = Date.now();
             try {
               importScripts(e.data.blobURL);
-              results.push('PASS: importScripts blob URL: ' + (Date.now() - t2) + 'ms, createFFmpegCore=' + (typeof self.createFFmpegCore));
+              results.push('PASS: importScripts blob: ' + (Date.now() - t2) + 'ms, createFFmpegCore=' + (typeof self.createFFmpegCore));
             } catch (err) {
-              results.push('FAIL: importScripts blob URL: ' + err.message);
+              results.push('FAIL: importScripts blob: ' + err.message);
+              self.postMessage({ type: 'done', results: results });
+              return;
             }
 
-            done(true, 'All tests complete');
+            // Test 3: pre-load WASM + call createFFmpegCore (Emscripten init)
+            var t3 = Date.now();
+            fetch(e.data.wasmURL)
+              .then(function(r) { return r.arrayBuffer(); })
+              .then(function(wasmBuf) {
+                results.push('PASS: fetch WASM in Worker: ' + (Date.now() - t3) + 'ms, ' + (wasmBuf.byteLength / 1024 / 1024).toFixed(1) + 'MB');
+
+                // Set Module.wasmBinary BEFORE calling createFFmpegCore
+                self.Module = self.Module || {};
+                self.Module.wasmBinary = wasmBuf;
+
+                var t4 = Date.now();
+                try {
+                  var promise = self.createFFmpegCore({
+                    mainScriptUrlOrBlob: 'ffmpeg-core.wasm',
+                    locateFile: function(path) { return path; }
+                  });
+                  if (promise && typeof promise.then === 'function') {
+                    // Add a 10s timeout for the diagnostic
+                    var timeout = setTimeout(function() {
+                      fail('createFFmpegCore timed out after 10s — WASM init hangs');
+                    }, 10000);
+
+                    promise.then(function(core) {
+                      clearTimeout(timeout);
+                      results.push('PASS: createFFmpegCore: ' + (Date.now() - t4) + 'ms');
+                      self.postMessage({ type: 'done', results: results });
+                    }).catch(function(err) {
+                      clearTimeout(timeout);
+                      results.push('FAIL: createFFmpegCore rejected: ' + (err.message || err));
+                      self.postMessage({ type: 'done', results: results });
+                    });
+                  } else {
+                    results.push('PASS: createFFmpegCore sync: ' + (Date.now() - t4) + 'ms');
+                    self.postMessage({ type: 'done', results: results });
+                  }
+                } catch (err) {
+                  results.push('FAIL: createFFmpegCore threw: ' + (err.message || err));
+                  self.postMessage({ type: 'done', results: results });
+                }
+              })
+              .catch(function(err) {
+                results.push('FAIL: fetch WASM in Worker: ' + (err.message || err));
+                self.postMessage({ type: 'done', results: results });
+              });
           })
           .catch(function(err) {
             fail('fetch CDN URL failed: ' + err.message);
@@ -198,7 +240,7 @@ export class FFmpegEngine {
           reject(new Error(`Diagnostic Worker failed to load: ${fields}`));
         };
 
-        worker.postMessage({ fetchURL: fetchTestURL, blobURL: coreBlobURL });
+        worker.postMessage({ fetchURL: fetchTestURL, blobURL: coreBlobURL, wasmURL: `${CORE_ST_BASE}/ffmpeg-core.wasm` });
       });
 
       URL.revokeObjectURL(workerBlobURL);
