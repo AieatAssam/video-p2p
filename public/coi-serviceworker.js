@@ -4,7 +4,8 @@
  * GitHub Pages strips custom HTTP headers, so we can't use _headers file
  * to set Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy.
  * This SW intercepts same-origin navigation requests and adds the required
- * headers to enable SharedArrayBuffer for ffmpeg.wasm.
+ * headers for cross-origin isolation. Previously required for SharedArrayBuffer
+ * (ffmpeg.wasm); kept for future WebAssembly threading support.
  *
  * How it works:
  *   1. On first visit, index.html registers this SW

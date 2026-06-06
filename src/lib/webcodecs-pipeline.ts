@@ -3,15 +3,14 @@
  *
  * How it works:
  *   1. Play the source video (GPU-decoded via <video>) into a hidden canvas
- *   2. Apply Canvas2D effects (crop, resize, color grade, blur, text, etc.)
+ *   2. Apply Canvas2D effects (crop, resize, color grade, blur, text,
+ *      pixelate, chroma key, vignette, glitch, speed, reverse)
  *   3. canvas.captureStream() feeds frames to a MediaRecorder
  *   4. MediaRecorder encodes + muxes into MP4 natively (browser handles H.264)
  *
  * Limitations:
  *   - Runs at real-time playback speed (a 10s video takes ~10s to export)
- *   - No GIF output (use hybrid/ffmpeg for that)
- *   - Audio may be dropped (separate pipeline needed for audio)
- *   - Can't do speed/reverse easily (needs frame-level control)
+ *   - Audio is dropped (canvas capture is video-only)
  */
 import type { EffectInput } from '@/lib/effects';
 import type { LogEntry } from '@/types';
@@ -159,12 +158,24 @@ export async function exportWithMediaRecorder(
 
   // ── 5. Render loop — seek and draw each frame ──
   const fps = 30;
-  const totalFrames = Math.ceil(duration * fps);
 
-  addLog('info', `  Rendering ${totalFrames} frames...`);
+  // Speed effect: adjust frame timing
+  const speedEffect = effects.find((e) => e.type === 'speed');
+  const speedFactor = (speedEffect?.params as { factor?: number })?.factor ?? 1;
 
-  for (let i = 0; i < totalFrames; i++) {
-    const targetTime = trimStart + i / fps;
+  // Reverse effect: iterate frames backward
+  const reverseEffect = effects.find((e) => e.type === 'reverse');
+  const isReversed = !!reverseEffect;
+
+  const totalFrames = Math.ceil(duration * fps * (1 / Math.abs(speedFactor)));
+
+  addLog('info', `  Rendering ${totalFrames} frames${speedFactor !== 1 ? ` (${speedFactor}x speed)` : ''}${isReversed ? ' (reversed)' : ''}...`);
+
+  for (let fi = 0; fi < totalFrames; fi++) {
+    // Compute source time: reverse flips the frame order
+    const frameIndex = isReversed ? (totalFrames - 1 - fi) : fi;
+    const srcTime = trimStart + frameIndex / (fps * (1 / Math.abs(speedFactor)));
+    const targetTime = Math.min(srcTime, trimEnd - 0.001);
 
     // Seek
     video.currentTime = targetTime;
@@ -240,6 +251,20 @@ export async function exportWithMediaRecorder(
       ctx.filter = 'none';
     }
 
+    // Apply vignette (radial gradient overlay)
+    const vignetteEffect = effects.find((e) => e.type === 'vignette');
+    if (vignetteEffect?.params) {
+      const vp = vignetteEffect.params as { radius?: number; softness?: number };
+      applyVignette(ctx, outW, outH, vp.radius ?? 0.5, vp.softness ?? 0.3);
+    }
+
+    // Apply glitch (pixel shifting + chromatic aberration on random frames)
+    const glitchEffect = effects.find((e) => e.type === 'glitch');
+    if (glitchEffect?.params) {
+      const gp = glitchEffect.params as { intensity?: number };
+      applyGlitch(ctx, outW, outH, gp.intensity ?? 5, i);
+    }
+
     // Apply filter preset (grayscale, sepia, invert via CSS)
     const filterEffect = effects.find((e) => e.type === 'filter');
     if (filterEffect?.params) {
@@ -307,7 +332,7 @@ export async function exportWithMediaRecorder(
 
     // Progress
     if (onProgress) {
-      onProgress({ percent: ((i + 1) / totalFrames) * 100 });
+      onProgress({ percent: ((fi + 1) / totalFrames) * 100 });
     }
   }
 
@@ -375,4 +400,91 @@ function applyChromaKey(
   }
 
   ctx.putImageData(imageData, 0, 0);
+}
+
+/** Vignette effect via radial gradient overlay */
+function applyVignette(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  radius: number,
+  softness: number
+) {
+  const cx = width / 2;
+  const cy = height / 2;
+  const maxR = Math.sqrt(cx * cx + cy * cy);
+  const innerR = maxR * radius;
+  const outerR = maxR;
+
+  const gradient = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+  gradient.addColorStop(0, 'rgba(0,0,0,0)');
+  gradient.addColorStop(1 - softness, 'rgba(0,0,0,0)');
+  gradient.addColorStop(1, 'rgba(0,0,0,0.85)');
+
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+}
+
+/** Glitch effect — semi-random pixel shifting + chromatic aberration */
+function applyGlitch(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  intensity: number,
+  frameIndex: number
+) {
+  // Only glitch on some frames (roughly 30% chance, weighted by intensity)
+  const seed = (frameIndex * 137 + 42) % 256;
+  if (seed > 50 + intensity * 3) return;
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = imageData.data;
+  const dst = new Uint8ClampedArray(src.length);
+
+  // Copy base image
+  dst.set(src);
+
+  // Random horizontal slice shift
+  const sliceHeight = Math.max(2, Math.round(height / (20 - intensity)));
+  const numSlices = 3 + Math.floor(intensity / 2);
+
+  for (let s = 0; s < numSlices; s++) {
+    const yStart = ((frameIndex * 73 + s * 191) % height);
+    const yEnd = Math.min(yStart + sliceHeight, height);
+    const shift = ((frameIndex * 31 + s * 97) % 2 === 0 ? 1 : -1)
+      * Math.round(intensity * 3 * ((s + 1) / numSlices));
+
+    if (Math.abs(shift) < 2) continue;
+
+    // Shift pixels in this slice horizontally
+    for (let y = yStart; y < yEnd; y++) {
+      const rowStart = y * width * 4;
+      for (let x = 0; x < width; x++) {
+        const srcX = x + shift;
+        if (srcX < 0 || srcX >= width) continue;
+        const srcIdx = rowStart + srcX * 4;
+        const dstIdx = rowStart + x * 4;
+        dst[dstIdx] = src[srcIdx];
+        dst[dstIdx + 1] = src[srcIdx + 1];
+        dst[dstIdx + 2] = src[srcIdx + 2];
+        dst[dstIdx + 3] = src[srcIdx + 3];
+      }
+    }
+  }
+
+  // Chromatic aberration: shift red channel slightly
+  if (intensity > 3) {
+    for (let y = 0; y < height; y++) {
+      const rowStart = y * width * 4;
+      const shift = Math.round(intensity * 0.5);
+      for (let x = shift; x < width; x++) {
+        const srcIdx = rowStart + (x - shift) * 4;
+        const dstIdx = rowStart + x * 4;
+        // Shift red channel right
+        dst[dstIdx] = src[srcIdx]; // R from shifted position
+      }
+    }
+  }
+
+  ctx.putImageData(new ImageData(dst, width, height), 0, 0);
 }

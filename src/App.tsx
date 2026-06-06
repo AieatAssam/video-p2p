@@ -64,7 +64,7 @@ function App() {
         </main>
 
         <footer className="border-t border-border px-4 py-2 text-xs text-muted-foreground text-center">
-          Powered by ffmpeg.wasm + WebRTC — 100% client-side on GitHub Pages
+          Powered by WebCodecs + WebRTC — 100% client-side on GitHub Pages
         </footer>
       </div>
     );

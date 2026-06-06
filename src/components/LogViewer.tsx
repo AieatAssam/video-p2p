@@ -27,7 +27,6 @@ const levelColors: Record<string, string> = {
   warn: 'text-yellow-400',
   error: 'text-red-400',
   debug: 'text-muted-foreground',
-  ffmpeg: 'text-green-400',
 };
 
 const levelLabels: Record<string, string> = {
@@ -35,7 +34,6 @@ const levelLabels: Record<string, string> = {
   warn: 'WARN',
   error: 'ERR ',
   debug: 'DBUG',
-  ffmpeg: 'FFMP',
 };
 
 export function LogViewer({ logs, onClear, maxHeight = 300, className }: LogViewerProps) {
@@ -126,7 +124,7 @@ export function LogViewer({ logs, onClear, maxHeight = 300, className }: LogView
         >
           {logs.length === 0 ? (
             <div className="px-3 py-4 text-center text-muted-foreground/50 text-xs">
-              No log entries yet. Load a video to see ffmpeg output.
+              No log entries yet. Load a video to see processing output.
             </div>
           ) : (
             <>

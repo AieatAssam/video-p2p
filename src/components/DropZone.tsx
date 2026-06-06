@@ -23,7 +23,7 @@ export function DropZone({ onFileSelected, accept = 'video/*', className }: Drop
     // Check extension fallback for files where type is empty
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (ext && VIDEO_EXTS.includes(ext)) return true;
-    // If we can't determine the type, let it through (ffmpeg will reject it if invalid)
+    // If we can't determine the type, let it through
     return !file.type;
   };
 

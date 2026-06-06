@@ -38,6 +38,7 @@ const EFFECT_CATEGORIES: Record<string, { label: string; types: { value: EffectT
       { value: 'color-grade', label: 'Color Grade' },
       { value: 'blur', label: 'Blur' },
       { value: 'pixelate', label: 'Pixelate' },
+      { value: 'vignette', label: 'Vignette' },
       { value: 'glitch', label: 'Glitch / VHS' },
     ],
   },
@@ -48,8 +49,6 @@ const EFFECT_CATEGORIES: Record<string, { label: string; types: { value: EffectT
       { value: 'resize', label: 'Resize' },
       { value: 'speed', label: 'Speed' },
       { value: 'reverse', label: 'Reverse' },
-      { value: 'stabilize', label: 'Stabilization' },
-      { value: 'split-screen', label: 'Split Screen' },
     ],
   },
   overlay: {
@@ -57,14 +56,6 @@ const EFFECT_CATEGORIES: Record<string, { label: string; types: { value: EffectT
     types: [
       { value: 'text-overlay', label: 'Text Overlay' },
       { value: 'chroma-key', label: 'Chroma Key' },
-    ],
-  },
-  export: {
-    label: 'Export',
-    types: [
-      { value: 'gif-export', label: 'GIF Export' },
-      { value: 'audio-extract', label: 'Extract Audio' },
-      { value: 'frame-extract', label: 'Frame Extract' },
     ],
   },
 };
@@ -351,75 +342,6 @@ function EffectControl({
           </div>
         );
       }
-      case 'gif-export': {
-        const fps = (effect.params.fps as number) ?? 10;
-        const width = (effect.params.width as number) ?? 480;
-        const dither = (effect.params.dither as boolean) ?? true;
-        return (
-          <div className="space-y-2">
-            <div>
-              <Label>FPS: {fps}</Label>
-              <Slider value={[fps]} min={1} max={30} step={1} onValueChange={([v]) => onUpdate({ ...effect.params, fps: v })} />
-            </div>
-            <div>
-              <Label>Max Width: {width}</Label>
-              <Input
-                type="number"
-                value={width}
-                onChange={(e) => onUpdate({ ...effect.params, width: parseInt(e.target.value) || 480 })}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch checked={dither} onCheckedChange={(v) => onUpdate({ ...effect.params, dither: v })} />
-              <Label>Dithering</Label>
-            </div>
-          </div>
-        );
-      }
-      case 'audio-extract': {
-        const format = (effect.params.format as string) ?? 'mp3';
-        const bitrate = (effect.params.bitrate as number) ?? 192;
-        return (
-          <div className="space-y-2">
-            <div>
-              <Label>Format</Label>
-              <Select value={format} onValueChange={(v) => onUpdate({ ...effect.params, format: v })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="mp3">MP3</SelectItem>
-                  <SelectItem value="wav">WAV</SelectItem>
-                  <SelectItem value="aac">AAC</SelectItem>
-                  <SelectItem value="ogg">OGG</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Bitrate: {bitrate}kbps</Label>
-              <Slider value={[bitrate]} min={64} max={320} step={32} onValueChange={([v]) => onUpdate({ ...effect.params, bitrate: v })} />
-            </div>
-          </div>
-        );
-      }
-      case 'audio-replace': {
-        const matchVideo = (effect.params.matchVideo as boolean) ?? true;
-        return (
-          <div className="flex items-center gap-2">
-            <Switch checked={matchVideo} onCheckedChange={(v) => onUpdate({ ...effect.params, matchVideo: v })} />
-            <Label>Match video length</Label>
-          </div>
-        );
-      }
-      case 'stabilize': {
-        const smoothness = (effect.params.smoothness as number) ?? 5;
-        return (
-          <div>
-            <Label>Smoothness: {smoothness}</Label>
-            <Slider value={[smoothness]} min={1} max={15} step={1} onValueChange={([v]) => onUpdate({ ...effect.params, smoothness: v })} />
-          </div>
-        );
-      }
       case 'glitch': {
         const intensity = (effect.params.intensity as number) ?? 5;
         const chromatic = (effect.params.chromatic as boolean) ?? true;
@@ -441,71 +363,18 @@ function EffectControl({
           </div>
         );
       }
-      case 'split-screen': {
-        const layout = (effect.params.layout as string) ?? 'side-by-side';
-        const position = (effect.params.position as string) ?? 'br';
+      case 'vignette': {
+        const radius = (effect.params.radius as number) ?? 0.5;
+        const softness = (effect.params.softness as number) ?? 0.3;
         return (
           <div className="space-y-2">
             <div>
-              <Label>Layout</Label>
-              <Select value={layout} onValueChange={(v) => onUpdate({ ...effect.params, layout: v })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="side-by-side">Side by Side</SelectItem>
-                  <SelectItem value="pip">Picture-in-Picture</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {layout === 'pip' && (
-              <div>
-                <Label>Position</Label>
-                <Select value={position} onValueChange={(v) => onUpdate({ ...effect.params, position: v })}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="tl">Top Left</SelectItem>
-                    <SelectItem value="tr">Top Right</SelectItem>
-                    <SelectItem value="bl">Bottom Left</SelectItem>
-                    <SelectItem value="br">Bottom Right</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-        );
-      }
-      case 'frame-extract': {
-        const format = (effect.params.format as string) ?? 'png';
-        const everyNth = (effect.params.everyNth as number) ?? 1;
-        const maxWidth = (effect.params.maxWidth as number) ?? 0;
-        return (
-          <div className="space-y-2">
-            <div>
-              <Label>Format</Label>
-              <Select value={format} onValueChange={(v) => onUpdate({ ...effect.params, format: v })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="png">PNG</SelectItem>
-                  <SelectItem value="jpg">JPEG</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>Radius: {(radius * 100).toFixed(0)}%</Label>
+              <Slider value={[radius]} min={0.1} max={1} step={0.05} onValueChange={([v]) => onUpdate({ ...effect.params, radius: v })} />
             </div>
             <div>
-              <Label>Every Nth Frame: {everyNth}</Label>
-              <Slider value={[everyNth]} min={1} max={60} step={1} onValueChange={([v]) => onUpdate({ ...effect.params, everyNth: v })} />
-            </div>
-            <div>
-              <Label>Max Width</Label>
-              <Input
-                type="number"
-                value={maxWidth}
-                onChange={(e) => onUpdate({ ...effect.params, maxWidth: parseInt(e.target.value) || 0 })}
-              />
+              <Label>Softness: {(softness * 100).toFixed(0)}%</Label>
+              <Slider value={[softness]} min={0} max={1} step={0.05} onValueChange={([v]) => onUpdate({ ...effect.params, softness: v })} />
             </div>
           </div>
         );
