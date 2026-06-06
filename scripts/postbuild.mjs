@@ -72,12 +72,14 @@ try {
       '{coreURL:t,wasmURL:n,workerURL:e,wasmBinary:w}'
     );
 
-    // 2) After the try/catch that calls importScripts, set Module.wasmBinary.
-    //    The try/catch ends with: throw u}const s=t,
-    //    Inject before "const s=t":  if(w)self.Module.wasmBinary=w;
+    // 2) Set Module.wasmBinary BEFORE importScripts so Emscripten picks it up.
+    //    Emscripten preamble: var Module = typeof Module != "undefined" ? Module : {};
+    //    If self.Module exists before importScripts, Emscripten reuses it.
+    //    Inject "if(w)self.Module={wasmBinary:w};" right after "const o=!r;"
+    //    (before the try block that calls importScripts).
     content = content.replace(
-      /throw u\}const s=t,/g,
-      'throw u}if(w)self.Module.wasmBinary=w;const s=t,'
+      /const o=!r;try\{/g,
+      'const o=!r;if(w)self.Module={wasmBinary:w};try{'
     );
 
     if (content !== original) {
