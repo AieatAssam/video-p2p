@@ -259,7 +259,9 @@ export class FFmpegEngine {
 
   /**
    * Attempts to load a specific core variant with a timeout.
-   * Terminates the ffmpeg instance on failure so it can be retried.
+   * Pre-fetches the WASM binary on the main thread and passes it to the
+   * Worker so Emscripten can use Module.wasmBinary — bypassing any
+   * Worker-side fetch()/WebAssembly.instantiate issues on WebKit+COEP.
    */
   private async tryLoad(
     baseURL: string,
@@ -269,24 +271,32 @@ export class FFmpegEngine {
     const log = this.diagLog ?? (() => {});
     const label = variant === 'mt' ? 'core-mt (multi-thread)' : 'core (single-thread)';
 
-    // Fetch core files from CDN into same-origin blob URLs.
+    // Fetch core files: core.js as blob (for importScripts), wasm/worker as CDN URLs.
     const { coreURL, wasmURL, workerURL } = await this.fetchCoreFiles(baseURL, variant);
 
-    // Build load config — omit workerURL for single-thread (no pthreads).
-    const config: { coreURL: string; wasmURL: string; workerURL?: string } = {
-      coreURL,
-      wasmURL,
-    };
+    // Pre-fetch WASM binary on main thread. Emscripten checks Module.wasmBinary
+    // first — if set, it skips fetch() and uses the pre-loaded ArrayBuffer.
+    // This bypasses WebAssembly.instantiate(fetch(cdnURL)) issues on WebKit+COEP.
+    log('info', `⬇️ Pre-fetching ${label} WASM binary (~${variant === 'mt' ? '31' : '9'} MB)...`);
+    const t1 = performance.now();
+    const wasmResponse = await fetch(wasmURL);
+    if (!wasmResponse.ok) throw new Error(`WASM fetch failed: ${wasmResponse.status}`);
+    const wasmBinary = await wasmResponse.arrayBuffer();
+    log('info', `⬇️ ${label} WASM binary: ${(wasmBinary.byteLength / 1024 / 1024).toFixed(1)} MB in ${(performance.now() - t1).toFixed(0)}ms`);
+
+    // Build load config. wasmBinary reaches the worker via structured clone
+    // (copied, not transferred — acceptable overhead for 9-31 MB).
+    const config: Record<string, unknown> = { coreURL, wasmURL, wasmBinary };
     if (workerURL) config.workerURL = workerURL;
 
     const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false;
     const cores = navigator.hardwareConcurrency ?? 'unknown';
 
-    log('info', `⚙️ Initializing ${label} (timeout: ${(timeoutMs / 1000).toFixed(0)}s)...`);
-    const t0 = performance.now();
+    log('info', `⚙️ Initializing ${label} (pre-loaded WASM, timeout: ${(timeoutMs / 1000).toFixed(0)}s)...`);
+    const t2 = performance.now();
 
     await Promise.race([
-      this.ffmpeg.load(config),
+      this.ffmpeg.load(config as Parameters<typeof this.ffmpeg.load>[0]),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(
           `${label} load timed out after ${(timeoutMs / 1000).toFixed(0)}s. ` +
@@ -295,7 +305,7 @@ export class FFmpegEngine {
       ),
     ]);
 
-    log('info', `✅ ${label} initialized in ${(performance.now() - t0).toFixed(0)}ms`);
+    log('info', `✅ ${label} initialized in ${(performance.now() - t2).toFixed(0)}ms`);
   }
 
   /**

@@ -47,3 +47,50 @@ try {
 } catch (e) {
   console.error('❌ Failed to patch JS bundles:', e.message);
 }
+
+// ── Step 3: Patch ffmpeg worker to support pre-loaded wasmBinary ──
+// Emscripten checks Module.wasmBinary — if set, it skips WASM fetch().
+// We inject code after importScripts to set Module.wasmBinary from the
+// LOAD config data, bypassing Worker-side WASM compilation issues.
+// This fixes WebKit+COEP where WebAssembly.instantiate(fetch(cdnURL))
+// hangs inside the Worker.
+try {
+  const workerFiles = readdirSync(distAssets).filter(f =>
+    f.startsWith('worker-') && f.endsWith('.js')
+  );
+
+  for (const file of workerFiles) {
+    const filePath = join(distAssets, file);
+    let content = readFileSync(filePath, 'utf-8');
+    const original = content;
+
+    // 1) Add wasmBinary param to the O function signature.
+    //    Pattern: {coreURL:t,wasmURL:n,workerURL:e}
+    //    Replace: {coreURL:t,wasmURL:n,workerURL:e,wasmBinary:w}
+    content = content.replace(
+      /\{coreURL:t,wasmURL:n,workerURL:e\}/g,
+      '{coreURL:t,wasmURL:n,workerURL:e,wasmBinary:w}'
+    );
+
+    // 2) After the try/catch that calls importScripts, set Module.wasmBinary.
+    //    The try/catch ends with: throw u}const s=t,
+    //    Inject before "const s=t":  if(w)self.Module.wasmBinary=w;
+    content = content.replace(
+      /throw u\}const s=t,/g,
+      'throw u}if(w)self.Module.wasmBinary=w;const s=t,'
+    );
+
+    if (content !== original) {
+      writeFileSync(filePath, content, 'utf-8');
+      console.log(`✅ Patched ${file}: added wasmBinary support to ffmpeg worker`);
+    } else {
+      console.log(`ℹ️  Worker ${file} pattern not found (may be already patched)`);
+    }
+  }
+
+  if (workerFiles.length === 0) {
+    console.log('ℹ️  No worker files found to patch');
+  }
+} catch (e) {
+  console.error('❌ Failed to patch worker files:', e.message);
+}
