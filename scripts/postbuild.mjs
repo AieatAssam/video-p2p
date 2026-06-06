@@ -72,14 +72,14 @@ try {
       '{coreURL:t,wasmURL:n,workerURL:e,wasmBinary:w}'
     );
 
-    // 2) Set Module.wasmBinary BEFORE importScripts so Emscripten picks it up.
-    //    Emscripten preamble: var Module = typeof Module != "undefined" ? Module : {};
-    //    If self.Module exists before importScripts, Emscripten reuses it.
-    //    Inject "if(w)self.Module={wasmBinary:w};" right after "const o=!r;"
-    //    (before the try block that calls importScripts).
+    //   2) Inject wasmBinary into the createFFmpegCore() call.
+    //    The function signature is function(createFFmpegCore={}) — the argument
+    //    BECOMES Module. Setting self.Module has NO effect because the parameter
+    //    shadows it. Must pass wasmBinary inside the call argument.
+    //    Inject ",wasmBinary:w" into the object passed to createFFmpegCore().
     content = content.replace(
-      /const o=!r;try\{/g,
-      'const o=!r;if(w)self.Module={wasmBinary:w};try{'
+      /self\.createFFmpegCore\(\{mainScriptUrlOrBlob:`\$\{s\}#\$\{btoa\(JSON\.stringify\(\{wasmURL:c,workerURL:p\}\)\)\}`\}\)/g,
+      'self.createFFmpegCore({mainScriptUrlOrBlob:`${s}#${btoa(JSON.stringify({wasmURL:c,workerURL:p}))}`,wasmBinary:w})'
     );
 
     if (content !== original) {

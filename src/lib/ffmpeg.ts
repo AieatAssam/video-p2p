@@ -157,15 +157,13 @@ export class FFmpegEngine {
               .then(function(wasmBuf) {
                 results.push('PASS: fetch WASM in Worker: ' + (Date.now() - t3) + 'ms, ' + (wasmBuf.byteLength / 1024 / 1024).toFixed(1) + 'MB');
 
-                // Set Module.wasmBinary BEFORE calling createFFmpegCore
-                self.Module = self.Module || {};
-                self.Module.wasmBinary = wasmBuf;
-
+                // Pass wasmBinary directly to createFFmpegCore().
+                // The function signature is function(createFFmpegCore={})
+                // which uses the argument as Module — self.Module is NOT read.
                 var t4 = Date.now();
                 try {
                   var promise = self.createFFmpegCore({
-                    mainScriptUrlOrBlob: 'ffmpeg-core.wasm',
-                    locateFile: function(path) { return path; }
+                    wasmBinary: wasmBuf,
                   });
                   if (promise && typeof promise.then === 'function') {
                     // Add a 10s timeout for the diagnostic
