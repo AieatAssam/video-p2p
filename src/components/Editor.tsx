@@ -455,21 +455,51 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 export default Editor;
 
 /**
- * Generate thumbnail strip by seeking a video element at evenly-spaced
- * intervals and capturing frames via Canvas2D. Returns object URLs.
+ * Generate thumbnail strip using a dedicated video element with its own
+ * blob URL — avoids sharing the data source with the Preview's <video>,
+ * which causes Chrome's internal FFmpeg demuxer to throw
+ * "FFmpegDemuxer: data source error" when one element disrupts the other.
  */
 async function generateThumbnails(
-  video: HTMLVideoElement,
+  _sourceVideo: HTMLVideoElement,
   duration: number,
-  _videoUrl: string
+  videoUrl: string
 ): Promise<string[]> {
   const THUMB_COUNT = 10;
   const urls: string[] = [];
 
-  if (duration <= 0 || video.videoWidth === 0) return urls;
+  if (duration <= 0) return urls;
 
-  // Attach to DOM briefly — some browsers (WebKit) pause frame decoding
-  // for detached video elements, causing black frames on seek.
+  // Create a dedicated video element with its own blob URL copy.
+  // Fetching the blob ensures a separate data source — avoids sharing
+  // with the Preview's <video> which causes demuxer conflicts on Chrome.
+  let video: HTMLVideoElement;
+  try {
+    const response = await fetch(videoUrl);
+    const blob = await response.blob();
+    const dedicatedUrl = URL.createObjectURL(blob);
+    video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = dedicatedUrl;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Thumb video load timed out')), 15000);
+      video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
+      video.onerror = () => { clearTimeout(timeout); reject(new Error('Thumb video failed')); };
+      if (video.readyState >= 2) { clearTimeout(timeout); resolve(); }
+    });
+  } catch {
+    return urls; // silently fail — thumbnails are non-critical
+  }
+
+  if (video.videoWidth === 0) {
+    URL.revokeObjectURL(video.src);
+    return urls;
+  }
+
+  // Attach to DOM so WebKit doesn't throttle frame decoding
   video.style.position = 'absolute';
   video.style.opacity = '0';
   video.style.pointerEvents = 'none';
@@ -483,41 +513,42 @@ async function generateThumbnails(
   canvas.width = thumbWidth;
   canvas.height = thumbHeight;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return urls;
+  if (!ctx) { cleanup(); return urls; }
 
   for (let i = 0; i < THUMB_COUNT; i++) {
     const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
 
+    // Seek to position, wait for frame to be composited
     await new Promise<void>((resolve) => {
       const onSeeked = () => {
         video.removeEventListener('seeked', onSeeked);
-        // Double rAF ensures the frame is decoded and ready for Canvas2D.
-        // On WebKit, a detached video may not have decoded frames immediately
-        // after 'seeked' — rAF flushes the rendering pipeline.
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       };
       video.addEventListener('seeked', onSeeked, { once: true });
       video.currentTime = seekTime;
-      // Already at position
       if (Math.abs(video.currentTime - seekTime) < 0.05) {
         video.removeEventListener('seeked', onSeeked);
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       }
     });
 
+    // Handle seek errors gracefully
+    if (video.readyState < 2) continue;
+
     ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
-    const blob = await new Promise<Blob | null>((resolve) =>
+    const jpegBlob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, 'image/jpeg', 0.7)
     );
-    if (blob) {
-      urls.push(URL.createObjectURL(blob));
+    if (jpegBlob) {
+      urls.push(URL.createObjectURL(jpegBlob));
     }
   }
 
-  // Remove from DOM
-  if (video.parentNode) {
-    video.parentNode.removeChild(video);
-  }
-
+  cleanup();
   return urls;
+
+  function cleanup() {
+    if (video.parentNode) video.parentNode.removeChild(video);
+    URL.revokeObjectURL(video.src);
+  }
 }
