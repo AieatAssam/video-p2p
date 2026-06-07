@@ -191,7 +191,10 @@ function EffectControl({
         return (
           <div className="flex items-center gap-2">
             <Switch checked={true} disabled />
-            <Label>Reverse video and audio</Label>
+            <div className="flex flex-col">
+              <Label>Reverse video and audio</Label>
+              <span className="text-[10px] text-muted-foreground">Applied at export — preview plays forward</span>
+            </div>
           </div>
         );
       }

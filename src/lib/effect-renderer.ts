@@ -1,9 +1,11 @@
 /**
  * Per-frame Canvas2D effect application — shared between export pipeline
  * and live preview. Applies effects in order: crop → color grade → blur
- * → vignette → filter preset → pixelate → text overlay.
+ * → vignette → filter preset → pixelate → glitch → text overlay.
  *
- * Skip slow pixel-level effects (chroma key, glitch) in live preview mode.
+ * Skip slow pixel-level effects (chroma key) in live preview mode.
+ * Reverse and speed effects are export-only — they control frame iteration
+ * order/timing, not per-frame rendering.
  */
 import type { EffectInput } from '@/lib/effects';
 
@@ -133,6 +135,16 @@ export function applyEffectsToFrame(opts: EffectFrameOptions): void {
     }
   }
 
+  // ── Glitch (pixel-level; somewhat slow but usable live) ──
+  const glitchEffect = effects.find((e) => e.type === 'glitch');
+  if (glitchEffect?.params) {
+    const gp = glitchEffect.params as { intensity?: number };
+    const intensity = gp.intensity ?? 5;
+    // Use a time-based seed so the glitch shifts over time in live preview
+    const frameSeed = live ? Math.floor(performance.now() / 66) : 0; // ~15fps seed for live
+    applyGlitch(ctx, outW, outH, intensity, frameSeed);
+  }
+
   // ── Text overlay ──
   const textEffect = effects.find((e) => e.type === 'textOverlay');
   if (textEffect?.params) {
@@ -166,4 +178,67 @@ function applyChromaKey(
     }
   }
   ctx.putImageData(img, 0, 0);
+}
+
+/** Glitch effect — semi-random pixel shifting + chromatic aberration */
+function applyGlitch(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  intensity: number,
+  frameIndex: number
+) {
+  // Only glitch on some frames (roughly 30% chance, weighted by intensity)
+  const seed = (frameIndex * 137 + 42) % 256;
+  if (seed > 50 + intensity * 3) return;
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const src = imageData.data;
+  const dst = new Uint8ClampedArray(src.length);
+
+  // Copy base image
+  dst.set(src);
+
+  // Random horizontal slice shift
+  const sliceHeight = Math.max(2, Math.round(height / (20 - intensity)));
+  const numSlices = 3 + Math.floor(intensity / 2);
+
+  for (let s = 0; s < numSlices; s++) {
+    const yStart = ((frameIndex * 73 + s * 191) % height);
+    const yEnd = Math.min(yStart + sliceHeight, height);
+    const shift = ((frameIndex * 31 + s * 97) % 2 === 0 ? 1 : -1)
+      * Math.round(intensity * 3 * ((s + 1) / numSlices));
+
+    if (Math.abs(shift) < 2) continue;
+
+    // Shift pixels in this slice horizontally
+    for (let y = yStart; y < yEnd; y++) {
+      const rowStart = y * width * 4;
+      for (let x = 0; x < width; x++) {
+        const srcX = x + shift;
+        if (srcX < 0 || srcX >= width) continue;
+        const srcIdx = rowStart + srcX * 4;
+        const dstIdx = rowStart + x * 4;
+        dst[dstIdx] = src[srcIdx];
+        dst[dstIdx + 1] = src[srcIdx + 1];
+        dst[dstIdx + 2] = src[srcIdx + 2];
+        dst[dstIdx + 3] = src[srcIdx + 3];
+      }
+    }
+  }
+
+  // Chromatic aberration: shift red channel slightly
+  if (intensity > 3) {
+    for (let y = 0; y < height; y++) {
+      const rowStart = y * width * 4;
+      const shift = Math.round(intensity * 0.5);
+      for (let x = shift; x < width; x++) {
+        const srcIdx = rowStart + (x - shift) * 4;
+        const dstIdx = rowStart + x * 4;
+        dst[dstIdx] = src[srcIdx]; // R from shifted position
+      }
+    }
+  }
+
+  ctx.putImageData(new ImageData(dst, width, height), 0, 0);
 }
