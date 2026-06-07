@@ -159,7 +159,6 @@ export function Preview({
     }
     setPlaybackError(null);
     // Notify parent that the video element is ready
-    console.log('[PREVIEW] handleLoadedMetadata firing onVideoRef, video=' + videoRef.current?.videoWidth + 'x' + videoRef.current?.videoHeight);
     if (videoRef.current) onVideoRef?.(videoRef.current);
   }, [onDurationChange, onVideoRef]);
 

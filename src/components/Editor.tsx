@@ -110,12 +110,8 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   // so we kick off thumbnails immediately when the element is handed to us.
   const kickOffThumbnails = useCallback(
     (video: HTMLVideoElement) => {
-      console.log('[KICKOFF] called, ref=' + thumbnailsGeneratedRef.current + ', w=' + video.videoWidth + ', dur=' + video.duration);
-      if (thumbnailsGeneratedRef.current) { console.log('[KICKOFF] already generated, skipping'); return; }
-      if (video.videoWidth === 0 || !isFinite(video.duration) || video.duration <= 0) {
-        console.log('[KICKOFF] guard failed: videoWidth=' + video.videoWidth + ', duration=' + video.duration);
-        return;
-      }
+      if (thumbnailsGeneratedRef.current) return;
+      if (video.videoWidth === 0 || !isFinite(video.duration) || video.duration <= 0) return;
 
       thumbnailsGeneratedRef.current = true;
       generateThumbnailsFromVideo(video, video.duration)
@@ -394,7 +390,6 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             onLog={addLog}
             recoveryFile={fileDataRef.current ?? undefined}
             onVideoRef={(v) => {
-              console.log('[ONVIDEOREF] called, v=' + (v ? v.tagName + ' ' + v.videoWidth + 'x' + v.videoHeight : 'null'));
               previewVideoRef.current = v;
               if (v) kickOffThumbnails(v);
             }}
@@ -495,8 +490,6 @@ async function generateThumbnailsFromVideo(
   const THUMB_COUNT = 10;
   const urls: string[] = [];
 
-  console.log('[THUMBS] generateThumbnailsFromVideo: dur=' + duration + ', w=' + video.videoWidth + ', readyState=' + video.readyState);
-
   if (duration <= 0 || video.videoWidth === 0) return urls;
 
   const originalTime = video.currentTime;
@@ -513,39 +506,36 @@ async function generateThumbnailsFromVideo(
 
   for (let i = 0; i < THUMB_COUNT; i++) {
     const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
-    const iterLabel = `[THUMBS] iter ${i}/${THUMB_COUNT} seek=${seekTime.toFixed(2)}`;
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          console.log(iterLabel + ' TIMEOUT');
-          reject(new Error('seek timeout'));
-        }, 3000);
-        const onSeeked = () => {
-          clearTimeout(timeout);
-          video.removeEventListener('seeked', onSeeked);
-          const t = performance.now();
-          requestAnimationFrame(() => requestAnimationFrame(() => {
-            console.log(iterLabel + ' seeked+rAF in ' + (performance.now() - t).toFixed(0) + 'ms');
-            resolve();
-          }));
-        };
-        video.addEventListener('seeked', onSeeked, { once: true });
-        video.currentTime = seekTime;
-        if (Math.abs(video.currentTime - seekTime) < 0.05) {
-          clearTimeout(timeout);
-          video.removeEventListener('seeked', onSeeked);
-          console.log(iterLabel + ' already-at-position (sync)');
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        }
-      });
-    } catch (e) {
-      console.log(iterLabel + ' ERROR: ' + (e instanceof Error ? e.message : e));
+      if (i === 0) {
+        // Frame 0: video is already at position 0, just wait for a decoded frame
+        await new Promise<void>((resolve) => {
+          const check = () => {
+            if (video.readyState >= 2) resolve();
+            else requestAnimationFrame(check);
+          };
+          check();
+        });
+      } else {
+        // Seek and wait for seeked event — NEVER short-circuit on Math.abs(),
+        // that skips frame decoding and leaves readyState at 1.
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('seek timeout')), 5000);
+          const onSeeked = () => {
+            clearTimeout(timeout);
+            video.removeEventListener('seeked', onSeeked);
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          };
+          video.addEventListener('seeked', onSeeked, { once: true });
+          video.currentTime = seekTime;
+        });
+      }
+    } catch {
       continue;
     }
 
-    console.log(iterLabel + ' after-seek readyState=' + video.readyState);
-    if (video.readyState < 2) { console.log(iterLabel + ' SKIP (readyState < 2)'); continue; }
+    if (video.readyState < 2) continue;
 
     ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
     const jpegBlob = await new Promise<Blob | null>((resolve) =>
@@ -553,9 +543,6 @@ async function generateThumbnailsFromVideo(
     );
     if (jpegBlob) {
       urls.push(URL.createObjectURL(jpegBlob));
-      console.log(iterLabel + ' ✅ captured ' + jpegBlob.size + ' bytes');
-    } else {
-      console.log(iterLabel + ' ❌ toBlob returned null');
     }
   }
 
@@ -567,6 +554,5 @@ async function generateThumbnailsFromVideo(
     video.currentTime = originalTime;
   }
 
-  console.log('[THUMBS] done, returning ' + urls.length + ' thumbnails');
   return urls;
 }
