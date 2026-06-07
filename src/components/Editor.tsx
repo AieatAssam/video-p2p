@@ -513,28 +513,39 @@ async function generateThumbnailsFromVideo(
 
   for (let i = 0; i < THUMB_COUNT; i++) {
     const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
+    const iterLabel = `[THUMBS] iter ${i}/${THUMB_COUNT} seek=${seekTime.toFixed(2)}`;
 
     try {
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('seek timeout')), 3000);
+        const timeout = setTimeout(() => {
+          console.log(iterLabel + ' TIMEOUT');
+          reject(new Error('seek timeout'));
+        }, 3000);
         const onSeeked = () => {
           clearTimeout(timeout);
           video.removeEventListener('seeked', onSeeked);
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          const t = performance.now();
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            console.log(iterLabel + ' seeked+rAF in ' + (performance.now() - t).toFixed(0) + 'ms');
+            resolve();
+          }));
         };
         video.addEventListener('seeked', onSeeked, { once: true });
         video.currentTime = seekTime;
         if (Math.abs(video.currentTime - seekTime) < 0.05) {
           clearTimeout(timeout);
           video.removeEventListener('seeked', onSeeked);
+          console.log(iterLabel + ' already-at-position (sync)');
           requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
         }
       });
-    } catch {
+    } catch (e) {
+      console.log(iterLabel + ' ERROR: ' + (e instanceof Error ? e.message : e));
       continue;
     }
 
-    if (video.readyState < 2) continue;
+    console.log(iterLabel + ' after-seek readyState=' + video.readyState);
+    if (video.readyState < 2) { console.log(iterLabel + ' SKIP (readyState < 2)'); continue; }
 
     ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
     const jpegBlob = await new Promise<Blob | null>((resolve) =>
@@ -542,6 +553,9 @@ async function generateThumbnailsFromVideo(
     );
     if (jpegBlob) {
       urls.push(URL.createObjectURL(jpegBlob));
+      console.log(iterLabel + ' ✅ captured ' + jpegBlob.size + ' bytes');
+    } else {
+      console.log(iterLabel + ' ❌ toBlob returned null');
     }
   }
 
