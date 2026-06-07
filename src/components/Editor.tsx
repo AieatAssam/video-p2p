@@ -110,8 +110,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   // so we kick off thumbnails immediately when the element is handed to us.
   const kickOffThumbnails = useCallback(
     (video: HTMLVideoElement) => {
-      if (thumbnailsGeneratedRef.current) return;
-      if (video.videoWidth === 0 || !isFinite(video.duration) || video.duration <= 0) return;
+      console.log('[KICKOFF] called, ref=' + thumbnailsGeneratedRef.current + ', w=' + video.videoWidth + ', dur=' + video.duration);
+      if (thumbnailsGeneratedRef.current) { console.log('[KICKOFF] already generated, skipping'); return; }
+      if (video.videoWidth === 0 || !isFinite(video.duration) || video.duration <= 0) {
+        console.log('[KICKOFF] guard failed: videoWidth=' + video.videoWidth + ', duration=' + video.duration);
+        return;
+      }
 
       thumbnailsGeneratedRef.current = true;
       generateThumbnailsFromVideo(video, video.duration)
@@ -390,6 +394,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             onLog={addLog}
             recoveryFile={fileDataRef.current ?? undefined}
             onVideoRef={(v) => {
+              console.log('[ONVIDEOREF] called, v=' + (v ? v.tagName + ' ' + v.videoWidth + 'x' + v.videoHeight : 'null'));
               previewVideoRef.current = v;
               if (v) kickOffThumbnails(v);
             }}
@@ -490,6 +495,8 @@ async function generateThumbnailsFromVideo(
   const THUMB_COUNT = 10;
   const urls: string[] = [];
 
+  console.log('[THUMBS] generateThumbnailsFromVideo: dur=' + duration + ', w=' + video.videoWidth + ', readyState=' + video.readyState);
+
   if (duration <= 0 || video.videoWidth === 0) return urls;
 
   const originalTime = video.currentTime;
@@ -546,5 +553,6 @@ async function generateThumbnailsFromVideo(
     video.currentTime = originalTime;
   }
 
+  console.log('[THUMBS] done, returning ' + urls.length + ' thumbnails');
   return urls;
 }
