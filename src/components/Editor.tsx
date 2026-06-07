@@ -25,10 +25,6 @@ function genEffectId(): string {
   return `effect-${Date.now()}-${++effectIdCounter}`;
 }
 
-/**
- * Maps UI-facing EffectType (kebab-case, from types/index.ts) to the
- * effects pipeline EffectType (camelCase, from effects.ts).
- */
 const EFFECT_TYPE_MAP: Record<string, string> = {
   'color-grade': 'colorGrade',
   'text-overlay': 'textOverlay',
@@ -82,15 +78,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
     if (!probeStartedRef.current) {
       probeStartedRef.current = true;
 
-      // System info
       const cores = navigator.hardwareConcurrency ?? 'unknown';
       const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false;
       addLog('debug', `🔧 System: ${cores} logical cores, crossOriginIsolated=${isolated}`);
 
-      // GPU probe
       runAccelerationProbe(addLog)
         .then((probe) => {
-          // Cache for later use
           (window as unknown as Record<string, unknown>).__accelProbe = probe;
         })
         .catch(() => {});
@@ -120,11 +113,9 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 
       fileDataRef.current = selectedFile;
 
-      // Create object URL for preview
       const url = URL.createObjectURL(selectedFile);
       setPreviewUrl(url);
 
-      // Determine video info from a native <video> element
       const tempVideo = document.createElement('video');
       tempVideo.muted = true;
       tempVideo.playsInline = true;
@@ -159,7 +150,6 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       setDuration(info.duration);
       setTrimEnd(info.duration);
 
-      // Probe codec for hardware acceleration
       const probe = (window as unknown as Record<string, unknown>).__accelProbe as AccelerationProbe | undefined;
       if (probe) {
         const codecs = probeFileAcceleration(tempVideo, probe);
@@ -167,20 +157,6 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
       }
 
       addLog('info', `  Resolution: ${info.width}x${info.height}, ${info.duration.toFixed(1)}s`);
-
-      // Generate thumbnails using a dedicated video element with its own
-      // blob URL — sharing tempVideo's blob URL with the Preview disrupts
-      // Chrome's media pipeline (FFmpegDemuxer: data source error).
-      if (fileDataRef.current) {
-        generateThumbnails(fileDataRef.current, info.duration)
-          .then((urls) => {
-            setThumbnails(urls);
-            addLog('debug', `  Generated ${urls.length} thumbnails`);
-          })
-          .catch((err) => {
-            addLog('warn', `  Thumbnail generation failed: ${err instanceof Error ? err.message : err}`);
-          });
-      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       addLog('error', `Failed to load video: ${message}`);
@@ -230,14 +206,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
         setProcessingStatus(statusMsg);
         savedPreviewUrl = previewUrl;
 
-        // Build effect chain from enabled effects, mapping UI types to pipeline types
         const activeEffects = effects.filter((e) => e.enabled);
         const effectInputs: EffectInput[] = activeEffects.map((e) => ({
           type: toPipelineType(e.type) as EffectInput['type'],
           params: e.params,
         }));
 
-        // Prepend trim if needed
         if (trimStart > 0 || trimEnd < duration) {
           effectInputs.unshift({
             type: 'trim',
@@ -245,7 +219,6 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
           });
         }
 
-        // Pipeline selection — always webcodecs now
         const decision = selectPipeline(
           effectInputs,
           format,
@@ -265,7 +238,6 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 
         addLog('info', 'Starting WebCodecs export (Canvas2D + MediaRecorder)...');
 
-        // Create a dedicated blob URL for the export pipeline
         let exportVideoUrl = previewUrl;
         if (fileDataRef.current) {
           try {
@@ -293,12 +265,10 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
           URL.revokeObjectURL(exportVideoUrl);
         }
 
-        // Trigger download
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        const ext = format === 'mp4' ? 'mp4' : 'webm';
-        a.download = `export.${ext}`;
+        a.download = `export.mp4`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -457,93 +427,3 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 }
 
 export default Editor;
-
-/**
- * Generate thumbnail strip using a dedicated video element with its own
- * blob URL — avoids sharing the data source with the Preview's <video>,
- * which causes Chrome's "FFmpegDemuxer: data source error" when seeking.
- * No DOM attachment needed; double rAF handles frame readiness.
- */
-async function generateThumbnails(
-  file: File,
-  duration: number
-): Promise<string[]> {
-  const THUMB_COUNT = 10;
-  const urls: string[] = [];
-
-  if (duration <= 0) return urls;
-
-  // Create independent blob URL from the File — separate data pipe
-  // from the Preview's blob URL, so seeking here doesn't disrupt playback.
-  const thumbUrl = URL.createObjectURL(file);
-  const video = document.createElement('video');
-  video.muted = true;
-  video.playsInline = true;
-  video.preload = 'auto';
-  video.src = thumbUrl;
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('metadata timeout')), 10000);
-      video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
-      video.onerror = () => { clearTimeout(timeout); reject(new Error('load error')); };
-      if (video.readyState >= 2) { clearTimeout(timeout); resolve(); }
-    });
-  } catch (err) {
-    URL.revokeObjectURL(thumbUrl);
-    throw err; // surface to caller for logging
-  }
-
-  if (video.videoWidth === 0) {
-    URL.revokeObjectURL(thumbUrl);
-    return urls;
-  }
-
-  const canvas = document.createElement('canvas');
-  const thumbWidth = 160;
-  const thumbHeight = Math.round((thumbWidth / video.videoWidth) * video.videoHeight);
-  canvas.width = thumbWidth;
-  canvas.height = thumbHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    URL.revokeObjectURL(thumbUrl);
-    return urls;
-  }
-
-  for (let i = 0; i < THUMB_COUNT; i++) {
-    const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('seek timeout')), 3000);
-        const onSeeked = () => {
-          clearTimeout(timeout);
-          video.removeEventListener('seeked', onSeeked);
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        };
-        video.addEventListener('seeked', onSeeked, { once: true });
-        video.currentTime = seekTime;
-        if (Math.abs(video.currentTime - seekTime) < 0.05) {
-          clearTimeout(timeout);
-          video.removeEventListener('seeked', onSeeked);
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        }
-      });
-    } catch {
-      continue;
-    }
-
-    if (video.readyState < 2) continue;
-
-    ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
-    const jpegBlob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', 0.7)
-    );
-    if (jpegBlob) {
-      urls.push(URL.createObjectURL(jpegBlob));
-    }
-  }
-
-  URL.revokeObjectURL(thumbUrl);
-  return urls;
-}
