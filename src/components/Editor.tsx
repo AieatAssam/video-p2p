@@ -168,15 +168,19 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 
       addLog('info', `  Resolution: ${info.width}x${info.height}, ${info.duration.toFixed(1)}s`);
 
-      // Generate thumbnails by seeking the video at evenly-spaced intervals
-      generateThumbnails(tempVideo, info.duration, url)
-        .then((urls) => {
-          setThumbnails(urls);
-          addLog('debug', `  Generated ${urls.length} thumbnails`);
-        })
-        .catch(() => {
-          addLog('warn', '  Thumbnail generation failed');
-        });
+      // Generate thumbnails using a dedicated video element with its own
+      // blob URL — sharing tempVideo's blob URL with the Preview disrupts
+      // Chrome's media pipeline (FFmpegDemuxer: data source error).
+      if (fileDataRef.current) {
+        generateThumbnails(fileDataRef.current, info.duration)
+          .then((urls) => {
+            setThumbnails(urls);
+            addLog('debug', `  Generated ${urls.length} thumbnails`);
+          })
+          .catch((err) => {
+            addLog('warn', `  Thumbnail generation failed: ${err instanceof Error ? err.message : err}`);
+          });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       addLog('error', `Failed to load video: ${message}`);
@@ -455,22 +459,45 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 export default Editor;
 
 /**
- * Generate thumbnail strip by seeking the source video at evenly-spaced
- * intervals and capturing frames via Canvas2D. Returns object URLs.
- *
- * Uses the same video element that already loaded metadata — no DOM
- * attachment or blob URL copying, which disrupts the Preview's data source
- * on Chrome (FFmpegDemuxer: data source error).
+ * Generate thumbnail strip using a dedicated video element with its own
+ * blob URL — avoids sharing the data source with the Preview's <video>,
+ * which causes Chrome's "FFmpegDemuxer: data source error" when seeking.
+ * No DOM attachment needed; double rAF handles frame readiness.
  */
 async function generateThumbnails(
-  video: HTMLVideoElement,
-  duration: number,
-  _videoUrl: string
+  file: File,
+  duration: number
 ): Promise<string[]> {
   const THUMB_COUNT = 10;
   const urls: string[] = [];
 
-  if (duration <= 0 || video.videoWidth === 0) return urls;
+  if (duration <= 0) return urls;
+
+  // Create independent blob URL from the File — separate data pipe
+  // from the Preview's blob URL, so seeking here doesn't disrupt playback.
+  const thumbUrl = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  video.src = thumbUrl;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('metadata timeout')), 10000);
+      video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
+      video.onerror = () => { clearTimeout(timeout); reject(new Error('load error')); };
+      if (video.readyState >= 2) { clearTimeout(timeout); resolve(); }
+    });
+  } catch (err) {
+    URL.revokeObjectURL(thumbUrl);
+    throw err; // surface to caller for logging
+  }
+
+  if (video.videoWidth === 0) {
+    URL.revokeObjectURL(thumbUrl);
+    return urls;
+  }
 
   const canvas = document.createElement('canvas');
   const thumbWidth = 160;
@@ -478,19 +505,20 @@ async function generateThumbnails(
   canvas.width = thumbWidth;
   canvas.height = thumbHeight;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return urls;
+  if (!ctx) {
+    URL.revokeObjectURL(thumbUrl);
+    return urls;
+  }
 
   for (let i = 0; i < THUMB_COUNT; i++) {
     const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
 
-    // Seek to position and wait for frame to decode
     try {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('seek timeout')), 3000);
         const onSeeked = () => {
           clearTimeout(timeout);
           video.removeEventListener('seeked', onSeeked);
-          // Double rAF ensures frame is composited before Canvas2D draw
           requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
         };
         video.addEventListener('seeked', onSeeked, { once: true });
@@ -502,7 +530,7 @@ async function generateThumbnails(
         }
       });
     } catch {
-      continue; // seek timed out — skip this frame
+      continue;
     }
 
     if (video.readyState < 2) continue;
@@ -516,5 +544,6 @@ async function generateThumbnails(
     }
   }
 
+  URL.revokeObjectURL(thumbUrl);
   return urls;
 }
