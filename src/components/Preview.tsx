@@ -17,6 +17,8 @@ interface PreviewProps {
   liveEffects?: EffectInput[];
   /** Called when the video element is mounted and ready */
   onVideoRef?: (video: HTMLVideoElement) => void;
+  /** Original File for blob URL recovery on MEDIA_ERR_NETWORK */
+  recoveryFile?: File;
 }
 
 export function Preview({
@@ -28,6 +30,7 @@ export function Preview({
   onLog,
   liveEffects,
   onVideoRef,
+  recoveryFile,
 }: PreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -37,6 +40,7 @@ export function Preview({
   const [duration, setDuration] = useState(0);
   const [isSeeking, setIsSeeking] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const recoveryCountRef = useRef(0);
 
   const hasLiveEffects = liveEffects && liveEffects.length > 0;
 
@@ -174,6 +178,35 @@ export function Preview({
       onLog?.('error', `🎬 Video element error [${codeName}]${detail}`);
       onLog?.('debug', `🎬 networkState=${video.networkState} readyState=${video.readyState} src="${video.currentSrc || '(none)'}"`);
 
+      // Recovery: Chrome's internal FFmpeg demuxer can lose the blob URL data
+      // pipe after ~20s of playback (especially HEVC). Recreating the blob URL
+      // from the original File gives the media pipeline a fresh data source.
+      if (
+        mediaError.code === MediaError.MEDIA_ERR_NETWORK &&
+        recoveryFile &&
+        recoveryCountRef.current < 3
+      ) {
+        recoveryCountRef.current += 1;
+        onLog?.('info', `🔄 Blob URL recovery attempt ${recoveryCountRef.current}/3`);
+        try {
+          const newUrl = URL.createObjectURL(recoveryFile);
+          const wasPlaying = !video.paused;
+          const savedTime = video.currentTime;
+          video.src = newUrl;
+          // Restore playback position after the new src has loaded metadata
+          const onMeta = () => {
+            video.removeEventListener('loadedmetadata', onMeta);
+            if (savedTime > 0) video.currentTime = savedTime;
+            if (wasPlaying) video.play().catch(() => {});
+          };
+          video.addEventListener('loadedmetadata', onMeta, { once: true });
+          setPlaybackError(null);
+          return; // Don't set error UI — we're recovering
+        } catch {
+          onLog?.('warn', '🔄 Blob URL recovery failed');
+        }
+      }
+
       setPlaybackError(
         mediaError.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
           ? 'Video codec not supported — this browser can\'t play this format.'
@@ -183,7 +216,7 @@ export function Preview({
       onLog?.('error', '🎬 Video playback error (no mediaError object)');
       setPlaybackError('Video playback error');
     }
-  }, [onLog]);
+  }, [onLog, recoveryFile]);
 
   const handleEnded = useCallback(() => {
     setIsPlaying(false);
@@ -200,6 +233,7 @@ export function Preview({
     setIsPlaying(false);
     setLocalCurrentTime(0);
     setPlaybackError(null);
+    recoveryCountRef.current = 0;
   }, [src]);
 
   return (

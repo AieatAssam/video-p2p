@@ -67,13 +67,22 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const thumbnailsGeneratedRef = useRef(false);
 
-  // Cleanup on unmount
+  // Track thumbnails in a ref so the unmount cleanup always has the latest URLs,
+  // without re-running the cleanup every time the thumbnails array changes.
+  const thumbnailsRef = useRef<string[]>([]);
   useEffect(() => {
+    thumbnailsRef.current = thumbnails;
+  }, [thumbnails]);
+
+  // Cleanup only on true unmount — revoke preview and all thumbnail blob URLs
+  useEffect(() => {
+    const preview = previewUrl;
     return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      thumbnails.forEach((t) => URL.revokeObjectURL(t));
+      if (preview) URL.revokeObjectURL(preview);
+      thumbnailsRef.current.forEach((t) => URL.revokeObjectURL(t));
     };
-  }, [previewUrl, thumbnails]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** Initialize the editor (probe GPU, mark ready). */
   useEffect(() => {
@@ -97,21 +106,27 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
   // Generate thumbnails when the Preview's video element is ready.
   // Uses the SAME video element (no separate blob URL) so Chrome's
   // FFmpegDemuxer isn't disrupted by a second data pipe.
-  useEffect(() => {
-    const video = previewVideoRef.current;
-    if (!video || thumbnailsGeneratedRef.current) return;
-    if (duration <= 0 || video.videoWidth === 0) return;
+  // Triggered from onVideoRef — refs don't fire React effects,
+  // so we kick off thumbnails immediately when the element is handed to us.
+  const kickOffThumbnails = useCallback(
+    (video: HTMLVideoElement) => {
+      if (thumbnailsGeneratedRef.current) return;
+      if (video.videoWidth === 0 || !isFinite(video.duration) || video.duration <= 0) return;
 
-    thumbnailsGeneratedRef.current = true;
-    generateThumbnailsFromVideo(video, duration)
-      .then((urls) => {
-        setThumbnails(urls);
-        addLog('debug', `  Generated ${urls.length} thumbnails`);
-      })
-      .catch(() => {
-        addLog('warn', '  Thumbnail generation failed');
-      });
-  }, [previewVideoRef.current, duration, addLog]);
+      thumbnailsGeneratedRef.current = true;
+      generateThumbnailsFromVideo(video, video.duration)
+        .then((urls) => {
+          setThumbnails(urls);
+          addLog('debug', `🖼️ Generated ${urls.length} thumbnails`);
+        })
+        .catch((err) => {
+          // Reset on failure so retry is possible on next src change
+          thumbnailsGeneratedRef.current = false;
+          addLog('warn', `🖼️ Thumbnail generation failed: ${err instanceof Error ? err.message : err}`);
+        });
+    },
+    [addLog]
+  );
 
   // Process file from the landing page automatically on mount
   useEffect(() => {
@@ -373,7 +388,11 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             onTimeUpdate={setCurrentTime}
             onDurationChange={setDuration}
             onLog={addLog}
-            onVideoRef={(v) => { previewVideoRef.current = v; }}
+            recoveryFile={fileDataRef.current ?? undefined}
+            onVideoRef={(v) => {
+              previewVideoRef.current = v;
+              if (v) kickOffThumbnails(v);
+            }}
             liveEffects={effects
               .filter((e) => e.enabled)
               .map((e) => ({
