@@ -15,6 +15,8 @@ interface PreviewProps {
   onLog?: (level: LogEntry['level'], message: string) => void;
   /** Live effects to render on the canvas overlay */
   liveEffects?: EffectInput[];
+  /** Called when the video element is mounted and ready */
+  onVideoRef?: (video: HTMLVideoElement) => void;
 }
 
 export function Preview({
@@ -25,6 +27,7 @@ export function Preview({
   className,
   onLog,
   liveEffects,
+  onVideoRef,
 }: PreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -151,7 +154,9 @@ export function Preview({
       onDurationChange?.(dur);
     }
     setPlaybackError(null);
-  }, [onDurationChange]);
+    // Notify parent that the video element is ready
+    if (videoRef.current) onVideoRef?.(videoRef.current);
+  }, [onDurationChange, onVideoRef]);
 
   const handleVideoError = useCallback(() => {
     const video = videoRef.current;

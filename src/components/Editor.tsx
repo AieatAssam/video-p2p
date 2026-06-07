@@ -64,6 +64,8 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 
   const fileDataRef = useRef<File | null>(null);
   const probeStartedRef = useRef(false);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const thumbnailsGeneratedRef = useRef(false);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -92,6 +94,25 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
     }
   }, [addLog]);
 
+  // Generate thumbnails when the Preview's video element is ready.
+  // Uses the SAME video element (no separate blob URL) so Chrome's
+  // FFmpegDemuxer isn't disrupted by a second data pipe.
+  useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video || thumbnailsGeneratedRef.current) return;
+    if (duration <= 0 || video.videoWidth === 0) return;
+
+    thumbnailsGeneratedRef.current = true;
+    generateThumbnailsFromVideo(video, duration)
+      .then((urls) => {
+        setThumbnails(urls);
+        addLog('debug', `  Generated ${urls.length} thumbnails`);
+      })
+      .catch(() => {
+        addLog('warn', '  Thumbnail generation failed');
+      });
+  }, [previewVideoRef.current, duration, addLog]);
+
   // Process file from the landing page automatically on mount
   useEffect(() => {
     if (initialFile && !file) {
@@ -106,6 +127,9 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 
     setFile(selectedFile);
     setLoadError(null);
+    thumbnailsGeneratedRef.current = false;
+    previewVideoRef.current = null;
+    setThumbnails([]);
 
     try {
       setIsProcessing(true);
@@ -349,6 +373,7 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             onTimeUpdate={setCurrentTime}
             onDurationChange={setDuration}
             onLog={addLog}
+            onVideoRef={(v) => { previewVideoRef.current = v; }}
             liveEffects={effects
               .filter((e) => e.enabled)
               .map((e) => ({
@@ -433,3 +458,74 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 }
 
 export default Editor;
+
+/**
+ * Generate thumbnail strip by seeking the Preview's own video element.
+ * Uses the SAME element (no separate blob URL) — avoids Chrome's
+ * FFmpegDemuxer conflict. Restores original position after.
+ */
+async function generateThumbnailsFromVideo(
+  video: HTMLVideoElement,
+  duration: number
+): Promise<string[]> {
+  const THUMB_COUNT = 10;
+  const urls: string[] = [];
+
+  if (duration <= 0 || video.videoWidth === 0) return urls;
+
+  const originalTime = video.currentTime;
+  const wasPlaying = !video.paused;
+  if (wasPlaying) video.pause();
+
+  const canvas = document.createElement('canvas');
+  const thumbWidth = 160;
+  const thumbHeight = Math.round((thumbWidth / video.videoWidth) * video.videoHeight);
+  canvas.width = thumbWidth;
+  canvas.height = thumbHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return urls;
+
+  for (let i = 0; i < THUMB_COUNT; i++) {
+    const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('seek timeout')), 3000);
+        const onSeeked = () => {
+          clearTimeout(timeout);
+          video.removeEventListener('seeked', onSeeked);
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        };
+        video.addEventListener('seeked', onSeeked, { once: true });
+        video.currentTime = seekTime;
+        if (Math.abs(video.currentTime - seekTime) < 0.05) {
+          clearTimeout(timeout);
+          video.removeEventListener('seeked', onSeeked);
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }
+      });
+    } catch {
+      continue;
+    }
+
+    if (video.readyState < 2) continue;
+
+    ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
+    const jpegBlob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.7)
+    );
+    if (jpegBlob) {
+      urls.push(URL.createObjectURL(jpegBlob));
+    }
+  }
+
+  // Restore original position and play state
+  if (wasPlaying) {
+    video.currentTime = originalTime;
+    video.play().catch(() => {});
+  } else {
+    video.currentTime = originalTime;
+  }
+
+  return urls;
+}
