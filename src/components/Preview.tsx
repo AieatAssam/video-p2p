@@ -2,6 +2,8 @@ import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Play, Pause, AlertTriangle } from 'lucide-react';
+import { applyEffectsToFrame } from '@/lib/effect-renderer';
+import type { EffectInput } from '@/lib/effects';
 import type { LogEntry } from '@/types';
 
 interface PreviewProps {
@@ -11,6 +13,8 @@ interface PreviewProps {
   onDurationChange?: (duration: number) => void;
   className?: string;
   onLog?: (level: LogEntry['level'], message: string) => void;
+  /** Live effects to render on the canvas overlay */
+  liveEffects?: EffectInput[];
 }
 
 export function Preview({
@@ -20,17 +24,58 @@ export function Preview({
   onDurationChange,
   className,
   onLog,
+  liveEffects,
 }: PreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [localCurrentTime, setLocalCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isSeeking, setIsSeeking] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
+  const hasLiveEffects = liveEffects && liveEffects.length > 0;
+
+  // ── Canvas render loop (when effects are active) ──
+  useEffect(() => {
+    if (!hasLiveEffects) {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+      return;
+    }
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const render = () => {
+      rafRef.current = requestAnimationFrame(render);
+
+      if (video.readyState < 2) return;
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      applyEffectsToFrame({
+        source: video,
+        srcWidth: video.videoWidth,
+        srcHeight: video.videoHeight,
+        ctx,
+        outW: canvas.width,
+        outH: canvas.height,
+        effects: liveEffects!,
+        live: true,
+      });
+    };
+
+    rafRef.current = requestAnimationFrame(render);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [hasLiveEffects, liveEffects]);
+
   // Sync external currentTime to video element when scrubbing the timeline.
-  // External seeks always override regardless of isSeeking — otherwise fast drags
-  // during an in-progress seek are swallowed, making the playhead seem unresponsive.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || currentTime === undefined) return;
@@ -42,8 +87,6 @@ export function Preview({
   }, [currentTime, onLog]);
 
   const doPlay = useCallback(async (video: HTMLVideoElement) => {
-    // Autoplay policies and unsupported codecs can cause play() to reject.
-    // We catch the rejection to surface it rather than swallowing it silently.
     const tryPlay = async (attempt: number): Promise<void> => {
       onLog?.('info', `▶️ Play requested (attempt ${attempt + 1})`);
       try {
@@ -60,32 +103,21 @@ export function Preview({
         const name = errorObj?.name ?? '';
         onLog?.('error', `▶️ Playback failed: ${name ? `[${name}] ` : ''}${msg}`);
 
-        // AbortError means something interrupted the play (seek, pause).
-        // Retry with a short delay — the browser just needs time to buffer
-        // at the new position after a seek.
         if ((name === 'AbortError' || msg.includes('AbortError')) && attempt < 2) {
           onLog?.('info', '⏳ Play was interrupted — retrying in 500ms...');
           await new Promise((r) => setTimeout(r, 500));
           return tryPlay(attempt + 1);
         }
 
-        // NotAllowedError = autoplay policy (user gesture needed) — recoverable
-        // NotSupportedError = codec not supported by browser — permanent
         if (msg.includes('NotAllowedError') || name === 'NotAllowedError' || msg.includes('user gesture')) {
           setPlaybackError('Click play to start (browser requires interaction)');
           onLog?.('warn', 'Playback blocked by autoplay policy — user gesture required');
         } else if (msg.includes('NotSupportedError') || name === 'NotSupportedError') {
-          setPlaybackError(
-            `Playback failed — this video codec may not be supported by your browser. ` +
-            `Try MP4 export or a different browser.`
-          );
+          setPlaybackError('Playback failed — this video codec may not be supported by your browser.');
           onLog?.('error', 'Codec not supported by browser for real-time playback');
         } else {
           setIsPlaying(false);
-          setPlaybackError(
-            `Playback failed — this video codec may not be supported by your browser. ` +
-            `Try MP4 export or a different browser.`
-          );
+          setPlaybackError('Playback failed — this video codec may not be supported by your browser.');
         }
       }
     };
@@ -139,7 +171,7 @@ export function Preview({
 
       setPlaybackError(
         mediaError.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-          ? `Video codec not supported — this browser can't play this format. Try a different browser or export to MP4.`
+          ? 'Video codec not supported — this browser can\'t play this format.'
           : `Video error (${codeName}): ${mediaError.message || 'Unknown error'}`
       );
     } else {
@@ -159,7 +191,6 @@ export function Preview({
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  // When src changes, reset state
   useEffect(() => {
     setIsPlaying(false);
     setLocalCurrentTime(0);
@@ -168,11 +199,11 @@ export function Preview({
 
   return (
     <div className={cn('relative flex flex-col overflow-hidden rounded-lg bg-black', className)}>
-      {/* Video element — muted helps autoplay policies */}
+      {/* Video element — hidden when canvas overlay is active */}
       <video
         ref={videoRef}
         src={src || undefined}
-        className="h-full w-full object-contain"
+        className={cn('h-full w-full object-contain', hasLiveEffects && 'hidden')}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
@@ -186,7 +217,15 @@ export function Preview({
         muted
       />
 
-      {/* Overlay controls — only show when a video is loaded */}
+      {/* Canvas overlay for live effects */}
+      {hasLiveEffects && (
+        <canvas
+          ref={canvasRef}
+          className="h-full w-full object-contain"
+        />
+      )}
+
+      {/* Overlay controls */}
       {src && (
         <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-3">
           <Button
@@ -201,6 +240,9 @@ export function Preview({
           <span className="text-xs text-white/80">
             {formatTime(localCurrentTime)} / {formatTime(duration)}
           </span>
+          {hasLiveEffects && (
+            <span className="text-[10px] text-yellow-400/80 ml-1">⚡ effects live</span>
+          )}
         </div>
       )}
 

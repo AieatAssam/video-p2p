@@ -349,6 +349,12 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
             onTimeUpdate={setCurrentTime}
             onDurationChange={setDuration}
             onLog={addLog}
+            liveEffects={effects
+              .filter((e) => e.enabled)
+              .map((e) => ({
+                type: toPipelineType(e.type) as EffectInput['type'],
+                params: e.params,
+              }))}
             className="flex-1 min-h-[200px]"
           />
 
