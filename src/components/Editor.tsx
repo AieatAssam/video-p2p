@@ -455,57 +455,22 @@ export function Editor({ initialFile }: { initialFile?: File | null }) {
 export default Editor;
 
 /**
- * Generate thumbnail strip using a dedicated video element with its own
- * blob URL — avoids sharing the data source with the Preview's <video>,
- * which causes Chrome's internal FFmpeg demuxer to throw
- * "FFmpegDemuxer: data source error" when one element disrupts the other.
+ * Generate thumbnail strip by seeking the source video at evenly-spaced
+ * intervals and capturing frames via Canvas2D. Returns object URLs.
+ *
+ * Uses the same video element that already loaded metadata — no DOM
+ * attachment or blob URL copying, which disrupts the Preview's data source
+ * on Chrome (FFmpegDemuxer: data source error).
  */
 async function generateThumbnails(
-  _sourceVideo: HTMLVideoElement,
+  video: HTMLVideoElement,
   duration: number,
-  videoUrl: string
+  _videoUrl: string
 ): Promise<string[]> {
   const THUMB_COUNT = 10;
   const urls: string[] = [];
 
-  if (duration <= 0) return urls;
-
-  // Create a dedicated video element with its own blob URL copy.
-  // Fetching the blob ensures a separate data source — avoids sharing
-  // with the Preview's <video> which causes demuxer conflicts on Chrome.
-  let video: HTMLVideoElement;
-  try {
-    const response = await fetch(videoUrl);
-    const blob = await response.blob();
-    const dedicatedUrl = URL.createObjectURL(blob);
-    video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    video.src = dedicatedUrl;
-
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Thumb video load timed out')), 15000);
-      video.onloadedmetadata = () => { clearTimeout(timeout); resolve(); };
-      video.onerror = () => { clearTimeout(timeout); reject(new Error('Thumb video failed')); };
-      if (video.readyState >= 2) { clearTimeout(timeout); resolve(); }
-    });
-  } catch {
-    return urls; // silently fail — thumbnails are non-critical
-  }
-
-  if (video.videoWidth === 0) {
-    URL.revokeObjectURL(video.src);
-    return urls;
-  }
-
-  // Attach to DOM so WebKit doesn't throttle frame decoding
-  video.style.position = 'absolute';
-  video.style.opacity = '0';
-  video.style.pointerEvents = 'none';
-  video.style.width = '1px';
-  video.style.height = '1px';
-  document.body.appendChild(video);
+  if (duration <= 0 || video.videoWidth === 0) return urls;
 
   const canvas = document.createElement('canvas');
   const thumbWidth = 160;
@@ -513,26 +478,33 @@ async function generateThumbnails(
   canvas.width = thumbWidth;
   canvas.height = thumbHeight;
   const ctx = canvas.getContext('2d');
-  if (!ctx) { cleanup(); return urls; }
+  if (!ctx) return urls;
 
   for (let i = 0; i < THUMB_COUNT; i++) {
     const seekTime = (i / (THUMB_COUNT - 1)) * (duration - 0.1);
 
-    // Seek to position, wait for frame to be composited
-    await new Promise<void>((resolve) => {
-      const onSeeked = () => {
-        video.removeEventListener('seeked', onSeeked);
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      };
-      video.addEventListener('seeked', onSeeked, { once: true });
-      video.currentTime = seekTime;
-      if (Math.abs(video.currentTime - seekTime) < 0.05) {
-        video.removeEventListener('seeked', onSeeked);
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      }
-    });
+    // Seek to position and wait for frame to decode
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('seek timeout')), 3000);
+        const onSeeked = () => {
+          clearTimeout(timeout);
+          video.removeEventListener('seeked', onSeeked);
+          // Double rAF ensures frame is composited before Canvas2D draw
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        };
+        video.addEventListener('seeked', onSeeked, { once: true });
+        video.currentTime = seekTime;
+        if (Math.abs(video.currentTime - seekTime) < 0.05) {
+          clearTimeout(timeout);
+          video.removeEventListener('seeked', onSeeked);
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }
+      });
+    } catch {
+      continue; // seek timed out — skip this frame
+    }
 
-    // Handle seek errors gracefully
     if (video.readyState < 2) continue;
 
     ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
@@ -544,11 +516,5 @@ async function generateThumbnails(
     }
   }
 
-  cleanup();
   return urls;
-
-  function cleanup() {
-    if (video.parentNode) video.parentNode.removeChild(video);
-    URL.revokeObjectURL(video.src);
-  }
 }
